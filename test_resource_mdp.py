@@ -1,0 +1,273 @@
+"""
+Sanity tests for resource_mdp.py v2 (ECPM Phase 2). Stdlib only.
+
+Run:  python3 test_resource_mdp.py
+
+Covers the handoff checklist:
+  - seeds reproduce (graphs, pairs, and evidence are bit-identical)
+  - deterministic mode is the same code path (identical topology per seed)
+  - all five conditions behave as specified; diff matches ground truth
+  - irrelevant-change invariant: the optimal route is preserved
+  - the eligible break is randomized (not candidates[0])
+  - coverage balance holds pre AND post (>= k attempts per listed pair)
+  - opaque labels: per-node unique, stable across the pair, removal safe
+  - execution-based scoring: optimal -> regret 0, garbage -> invalid
+  - stale vs adapted broken-link usage endpoints
+  - the full paired record is JSON-serializable and round-trips
+"""
+
+import json
+import random
+
+from resource_mdp import (CONDITIONS, RoutingMDP, assign_labels,
+                          breakable_route_links, broken_link_usage,
+                          collect_balanced, fixed_policy, legal_actions,
+                          make_pair, optimal_policy, pair_to_json,
+                          paired_evidence, rollout, route_from_actions,
+                          score_route)
+
+INF = float("inf")
+
+
+def eligible_seeds(n_wanted=6, det=False):
+    """First seeds that admit an eligible (reachability-preserving) break."""
+    out, s = [], 0
+    while len(out) < n_wanted and s < 200:
+        try:
+            make_pair(s, "silent_break", deterministic=det)
+            out.append(s)
+        except ValueError:
+            pass
+        s += 1
+    assert len(out) == n_wanted, "could not find enough eligible seeds"
+    return out
+
+
+SEEDS = eligible_seeds(6)
+
+
+def test_reproducibility():
+    for seed in SEEDS[:3]:
+        a = make_pair(seed, "silent_break")
+        b = make_pair(seed, "silent_break")
+        assert a.m0.p == b.m0.p and a.m1.p == b.m1.p
+        assert a.change == b.change and a.labels == b.labels
+        assert a.oracle == b.oracle
+        ea = paired_evidence(a, k=3, evidence_seed=5)
+        eb = paired_evidence(b, k=3, evidence_seed=5)
+        assert ea["pre"]["F1_log"] == eb["pre"]["F1_log"]
+        assert ea["post"]["F2_shuffled"] == eb["post"]["F2_shuffled"]
+    print("PASS reproducibility (graphs, diffs, labels, evidence)")
+
+
+def test_deterministic_same_code_path():
+    for seed in SEEDS[:4]:
+        sto = RoutingMDP.generate(seed=seed)
+        det = RoutingMDP.generate(seed=seed, p_range=(1.0, 1.0))
+        assert set(sto.p) == set(det.p), "topology must match across modes"
+        assert all(v == 1.0 for v in det.p.values())
+        route, cost = det.optimal_route(
+            max((n for n in det.nodes if n != det.goal),
+                key=lambda n: det.optimal()[0][n]))
+        assert abs(cost - (len(route) - 1)) < 1e-9, \
+            "deterministic cost == hop count"
+    print("PASS deterministic mode: same topology per seed, p==1, "
+          "cost==hops")
+
+
+def test_conditions():
+    for seed in SEEDS[:3]:
+        for cond in CONDITIONS:
+            inst = make_pair(seed, cond)
+            o, ch = inst.oracle, inst.change
+            assert o["pre"]["solvable"], "pre-world always solvable"
+            assert o["post"]["solvable"], \
+                "every condition must keep the goal reachable from start"
+            route0 = o["pre"]["optimal_route"]
+            r0_edges = set(zip(route0, route0[1:]))
+            if cond == "no_change":
+                assert inst.m1.p == inst.m0.p and ch["edge"] is None
+                assert not o["route_changed"] and o["cost_delta"] == 0.0
+            else:
+                e = ch["edge"]
+                assert e is not None
+                assert inst.m1.changes[-1]["edge"] == e, \
+                    "diff record matches environment ground truth"
+            if cond == "irrelevant":
+                assert ch["edge"] not in r0_edges
+                assert ch["on_optimal_route"] is False
+                assert ch["new_p"] < ch["old_p"]
+                assert o["post"]["optimal_route"] == route0, \
+                    "off-route degradation must preserve the optimum"
+            if cond == "degradation":
+                assert ch["edge"] in r0_edges and ch["on_optimal_route"]
+                assert 0 < ch["new_p"] < ch["old_p"]
+            if cond == "silent_break":
+                u, v = ch["edge"]
+                assert ch["edge"] in r0_edges
+                assert inst.m1.p[(u, v)] == 0.0
+                assert v in inst.m1.out_edges(u), "still listed"
+                assert ch["route_position"] is not None
+                assert (u, v) in inst.m1.broken
+            if cond == "hard_removal":
+                u, v = ch["edge"]
+                assert (u, v) not in inst.m1.p
+                assert v not in inst.m1.out_edges(u)
+                assert ch["new_p"] is None
+            # M0 is never mutated
+            assert not inst.m0.changes and not inst.m0.broken
+    print("PASS all five conditions on %d seeds (incl. irrelevant-change "
+          "invariant, M0 frozen)" % len(SEEDS[:3]))
+
+
+def test_break_randomization():
+    # find a seed with >= 2 eligible breaks, then redraw with change_seed
+    for seed in SEEDS:
+        inst = make_pair(seed, "silent_break")
+        cands = breakable_route_links(inst.m0.copy(), inst.start)
+        if len(cands) >= 2:
+            chosen = {make_pair(seed, "silent_break",
+                                change_seed=i).change["edge"]
+                      for i in range(12)}
+            assert len(chosen) >= 2, "break must be randomized"
+            assert chosen <= set(cands), "only eligible breaks drawn"
+            print("PASS break randomization: %d distinct edges drawn from "
+                  "%d candidates (seed %d)"
+                  % (len(chosen), len(cands), seed))
+            return
+    raise AssertionError("no seed with >=2 candidates found")
+
+
+def test_balance():
+    inst = make_pair(SEEDS[0], "silent_break")
+    ev = paired_evidence(inst, k=4, evidence_seed=1)
+    assert ev["min_attempts_pre"] >= 4 and ev["min_attempts_post"] >= 4
+    u, v = inst.change["edge"]
+    rec = ev["counts_post"][f"{u}->{v}"]
+    assert rec["attempts"] >= 4 and rec["delivered"] == 0, \
+        "broken pair gets >= k attempts, all drops"
+    # per-pair counts must equal the rendered evidence
+    total = sum(r["attempts"] for r in ev["counts_pre"].values())
+    assert total == sum(1 for ln in ev["pre"]["F2_ordered"].split("\n")
+                        if ln.strip())
+    # shuffled facts are a permutation of the ordered facts
+    assert (sorted(ev["pre"]["F2_shuffled"].split("\n"))
+            == sorted(ln for ln in ev["pre"]["F2_ordered"].split("\n")
+                      if ln.strip()))
+    assert (ev["pre"]["F2_shuffled"].split("\n")
+            != [ln for ln in ev["pre"]["F2_ordered"].split("\n")
+                if ln.strip()]), "shuffle must actually permute"
+    print("PASS balance: >=k per listed pair pre & post; broken pair all "
+          "drops; shuffled facts == permutation of ordered facts")
+
+
+def test_labels():
+    inst = make_pair(SEEDS[1], "hard_removal")
+    # every M0 edge labeled; per-node labels unique
+    for u in inst.m0.nodes:
+        labs = [inst.labels[(u, v)] for v in inst.m0.out_edges(u)]
+        assert len(labs) == len(set(labs))
+    assert set(inst.labels) == set(inst.m0.p)
+    # stable across the pair: M1 menu is a subset of M0 menu
+    la0 = legal_actions(inst.m0, inst.labels)
+    la1 = legal_actions(inst.m1, inst.labels)
+    u, v = inst.change["edge"]
+    gone = inst.labels[(u, v)]
+    assert gone in la0[u] and gone not in la1[u]
+    for w in inst.m1.nodes:
+        if w in la1:
+            assert set(la1[w]) <= set(la0[w]), \
+                "surviving labels must not shift after removal"
+    # labels reveal nothing lexical about destinations
+    assert all(lab[0] == "a" and lab[1:].isdigit()
+               for lab in inst.labels.values())
+    # translation: optimal action plan -> optimal node route
+    o = inst.oracle
+    path = route_from_actions(inst.start, o["pre"]["optimal_actions"],
+                              inst.labels)
+    assert path == o["pre"]["optimal_route"]
+    # a plan through the removed edge translates but scores invalid on M1
+    if o["pre"]["optimal_route"] != o["post"]["optimal_route"]:
+        stale_path = o["pre"]["optimal_route"]
+        assert score_route(inst.m1, stale_path, inst.start)["valid"] is False
+    print("PASS labels: per-node unique, stable across pair, opaque, "
+          "translation + removal semantics correct")
+
+
+def test_scoring():
+    inst = make_pair(SEEDS[2], "silent_break")
+    o = inst.oracle
+    s = score_route(inst.m1, o["post"]["optimal_route"], inst.start)
+    assert s["valid"] and abs(s["regret"]) < 1e-9
+    assert score_route(inst.m1, None, inst.start)["valid"] is False
+    assert score_route(inst.m1, [inst.start], inst.start)["valid"] is False
+    assert score_route(inst.m1, ["ZZ", inst.m1.goal],
+                       inst.start)["valid"] is False
+    # alternative route is proper, distinct, and no cheaper than optimal
+    alt, alt_c = o["pre"]["alternative_route"], o["pre"]["alternative_cost"]
+    assert alt is not None and alt != o["pre"]["optimal_route"]
+    assert alt_c >= o["pre"]["optimal_cost"] - 1e-9
+    assert score_route(inst.m0, alt, inst.start)["valid"]
+    print("PASS scoring: optimal regret 0, invalid plans rejected, "
+          "alternative route proper & distinct")
+
+
+def test_usage_metric_endpoints():
+    inst = make_pair(7, "silent_break")   # seed 7 = the write-up instance
+    u, v = inst.change["edge"]
+    rng = random.Random("t|usage")
+    stale = fixed_policy(inst.m0.optimal()[1], inst.m1)
+    adapted = optimal_policy(inst.m1)
+    stale_att = [a for _ in range(30)
+                 for a in rollout(inst.m1, inst.start, stale, rng, 40)[0]]
+    adapt_att = [a for _ in range(30)
+                 for a in rollout(inst.m1, inst.start, adapted, rng, 40)[0]]
+    assert broken_link_usage(stale_att, u, v) == 1.0
+    au = broken_link_usage(adapt_att, u, v)
+    assert au in (None, 0.0), "adapted planner never re-chooses the break"
+    print("PASS usage metric: stale=1.00, adapted=%s"
+          % ("n/a (node avoided)" if au is None else "0.00"))
+
+
+def test_json_roundtrip():
+    for det in (False, True):
+        inst = make_pair(SEEDS[0], "silent_break", deterministic=det)
+        ev = paired_evidence(inst, k=3, evidence_seed=9)
+        blob = json.dumps(pair_to_json(inst, ev))
+        back = json.loads(blob)
+        assert back["schema_version"] == "2.0"
+        assert back["change"]["edge"]["from"] == inst.change["edge"][0]
+        assert back["oracle"]["post"]["optimal_cost"] is not None
+        for f in ("F1_log", "F2_ordered", "F2_shuffled", "F3_stats",
+                  "F4_narrative"):
+            assert back["evidence"]["pre"][f]
+    # no_change serializes with a null edge
+    inst = make_pair(SEEDS[0], "no_change")
+    back = json.loads(json.dumps(pair_to_json(inst, None)))
+    assert back["change"]["edge"] is None
+    print("PASS JSON round-trip (both modes; null edge under no_change)")
+
+
+def test_multi_seed_sweep():
+    ok = 0
+    for seed in SEEDS:
+        for cond in CONDITIONS:
+            inst = make_pair(seed, cond)
+            assert inst.oracle["post"]["solvable"]
+            ok += 1
+    print("PASS sweep: %d condition x seed pairs all solvable post-change"
+          % ok)
+
+
+if __name__ == "__main__":
+    test_reproducibility()
+    test_deterministic_same_code_path()
+    test_conditions()
+    test_break_randomization()
+    test_balance()
+    test_labels()
+    test_scoring()
+    test_usage_metric_endpoints()
+    test_json_roundtrip()
+    test_multi_seed_sweep()
+    print("\nALL TESTS PASSED")
