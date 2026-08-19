@@ -1,0 +1,22 @@
+{
+  "comment": "ECPM v2.1 Section 7 acceptance cases, format level (instance-independent). Instance-level cases (valid/stale/illegal routes on the seed-7 records) are constructed in test_ecpm_parser.py.",
+  "cases": [
+    {"probe": "detection", "raw": "Yes, the dynamics changed. {\"changed\": true} That is my answer.", "expect_status": "ok", "expect": {"changed": true}},
+    {"probe": "detection", "raw": "I believe nothing changed between the two periods.", "expect_status": "malformed_json"},
+    {"probe": "detection", "raw": "{\"changed\": \"yes\"}", "expect_status": "invalid_object"},
+    {"probe": "detection", "raw": "{\"change\": true}", "expect_status": "invalid_object"},
+    {"probe": "detection", "raw": "{oops not json} ... final answer: {\"changed\": false}", "expect_status": "ok", "expect": {"changed": false}},
+    {"probe": "detection", "raw": "```json\n{\"changed\": false}\n```", "expect_status": "ok", "expect": {"changed": false}},
+    {"probe": "localization", "raw": "{\"node\": \"C\", \"action\": \"a2\"}", "expect_status": "ok"},
+    {"probe": "localization", "raw": "{\"node\": \"C\", \"action\": 2}", "expect_status": "invalid_object"},
+    {"probe": "localization", "raw": "{\"node\": \"C\"}", "expect_status": "invalid_object"},
+    {"probe": "preservation", "raw": "{\"pairs\": [{\"node\": \"A\", \"action\": \"a1\", \"changed\": false}, {\"node\": \"B\", \"action\": \"a2\", \"changed\": true, \"p\": 0.7}]}", "expect_status": "ok"},
+    {"probe": "preservation", "raw": "{\"pairs\": {\"node\": \"A\"}}", "expect_status": "invalid_object"},
+    {"probe": "preservation", "raw": "{\"pairs\": [{\"node\": \"A\", \"action\": \"a1\"}]}", "expect_status": "invalid_object"},
+    {"probe": "preservation", "raw": "{\"pairs\": [{\"node\": \"A\", \"action\": \"a1\", \"changed\": false, \"p\": \"high\"}]}", "expect_status": "invalid_object"},
+    {"probe": "adaptation", "raw": "{\"route\": []}", "expect_status": "ok"},
+    {"probe": "adaptation", "raw": "{\"route\": [\"a1\", \"a2\"]}", "expect_status": "invalid_object"},
+    {"probe": "adaptation", "raw": "{\"route\": [{\"node\": \"E\", \"action\": \"a2\"}], \"confidence\": 0.9}", "expect_status": "ok"},
+    {"probe": "adaptation", "raw_route_repeat": {"node": "A", "action": "a1"}, "raw_route_repeat_n": 33, "expect_status": "too_long"}
+  ]
+}

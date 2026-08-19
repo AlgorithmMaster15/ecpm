@@ -38,6 +38,29 @@ v2 implements the Phase 2 technical-handoff alignment (Pavlos, 17/08/26):
                            environment-side primitives; the evaluator
                            computes headline metrics on top.
 
+v2.1 pre-freeze revision (review 19/08/26):
+
+  * Matched targets ...... silent_break / hard_removal draw the SAME
+                           target link for a given (seed, mode).
+  * Irrelevant control ... targets a link off EVERY optimal route (ties
+                           included); in deterministic mode it is binary
+                           (p -> 0) and `degradation` is undefined, so the
+                           deterministic gate stays a {0, 1} world.
+  * Obfuscation .......... pure relabeling (separate name stream; the
+                           indexed weighted graph is unchanged).
+  * Scoring .............. score_route() reports a status: valid_finite |
+                           silent_broken_edge | illegal_action |
+                           invalid_route (v2.0 `valid` kept).
+  * Evidence budget ...... paired_evidence() caps episodes with a
+                           deterministic resampling rule; prompt_view()
+                           is the ONLY prompt-safe projection -- exact
+                           per-pair event budget (0 < B <= k enforced),
+                           one rendering, no counts_*/worlds/oracle in a
+                           prompt, realized sizes reported.
+  * Matched mode ......... make_pair(matched=True) anchors the det/sto
+                           comparison: shared start, goal, and
+                           intervention target per seed (v2.1.1).
+
 Grounding (unchanged from v1):
 
 - Bertsekas & Tsitsiklis (1991), "An Analysis of Stochastic Shortest Path
@@ -106,9 +129,13 @@ class RoutingMDP:
         """
         rng = random.Random(seed)
         if obfuscate:
+            # v2.1: names come from a SEPARATE stream, so obfuscation is
+            # pure relabeling -- topology/probability draws are untouched
+            # and the indexed weighted graph matches the plain instance.
+            name_rng = random.Random(f"{seed}|names")
             names = []
             while len(names) < n_nodes:
-                w = "".join(rng.choice(string.ascii_uppercase)
+                w = "".join(name_rng.choice(string.ascii_uppercase)
                             for _ in range(3))
                 if w not in names:
                     names.append(w)
@@ -307,6 +334,46 @@ def breakable_route_links(mdp, start):
     return keep
 
 
+def forward_distances(mdp, start):
+    """Expected attempts from `start` to every node (Dijkstra, weight 1/p).
+    Companion to RoutingMDP.optimal(), which runs from the goal."""
+    dist = {u: INF for u in mdp.nodes}
+    dist[start] = 0.0
+    pq = [(0.0, start)]
+    while pq:
+        d, u = heapq.heappop(pq)
+        if d != dist[u]:
+            continue
+        for v in mdp.out_edges(u):
+            pr = mdp.p[(u, v)]
+            if pr <= 0:
+                continue
+            nd = d + 1.0 / pr
+            if nd < dist[v] - 1e-12:
+                dist[v] = nd
+                heapq.heappush(pq, (nd, v))
+    return dist
+
+
+def edges_off_all_optimal_routes(mdp, start, tol=1e-9):
+    """Listed edges on NO optimal start->goal route: the v2.1 eligibility
+    set for the irrelevant control. (With ties, an edge off the canonical
+    route can still sit on another optimal route -- excluded here, so the
+    preservation guarantee holds in tie-heavy deterministic graphs.)"""
+    fwd = forward_distances(mdp, start)
+    dist_to_goal, _ = mdp.optimal()
+    optimum = dist_to_goal.get(start, INF)
+    off = []
+    for (u, v), pr in mdp.p.items():
+        on = (pr > 0
+              and fwd.get(u, INF) < INF
+              and dist_to_goal.get(v, INF) < INF
+              and abs(fwd[u] + 1.0 / pr + dist_to_goal[v] - optimum) <= tol)
+        if not on:
+            off.append((u, v))
+    return sorted(off)
+
+
 # --------------------------------------------------------------------------
 # Opaque action labels (stable across the pair; never reveal destinations)
 # --------------------------------------------------------------------------
@@ -417,57 +484,113 @@ def build_oracle(m0, m1, start, labels):
             "cost_delta": delta}
 
 
-def make_pair(seed, condition, *, deterministic=False, n_nodes=8,
-              extra_edges=6, p_range=(0.6, 0.95), obfuscate=False,
-              degradation_factor=0.5, change_seed=None):
+def make_pair(seed, condition, *, deterministic=False, matched=False,
+              n_nodes=8, extra_edges=6, p_range=(0.6, 0.95),
+              obfuscate=False, degradation_factor=0.5, change_seed=None):
     """Generate a paired instance (M0, M1, exact diff, oracle metadata).
 
     condition:
       no_change ...... M1 = M0 (false-positive control)
-      irrelevant ..... degrade one link OFF the optimal route (guaranteed
-                       not to alter the optimal route: off-route costs can
-                       only rise, so the optimum is preserved)
+      irrelevant ..... perturb one link OFF every optimal route (stochastic:
+                       degrade; deterministic: p -> 0). Optimal route and
+                       uniqueness provably preserved.
       degradation .... degrade one link ON the optimal route
-                       (new_p = max(0.05, old_p * degradation_factor))
+                       (new_p = max(0.05, old_p * degradation_factor));
+                       stochastic-only.
       silent_break ... p -> 0 on an eligible optimal-route link (still
                        listed; goal stays reachable, forcing replanning)
       hard_removal ... same eligible set, link removed from the action set
 
     deterministic=True sets p_range=(1.0, 1.0) through the same code path
     (identical topology per seed). The eligible break is drawn at RANDOM
-    from breakable_route_links via a string-seeded rng -- pass a different
+    from the eligible set via a string-seeded rng -- pass a different
     change_seed to redraw on the same graph. Raises ValueError if the seed
-    admits no eligible break (pick another seed).
+    admits no eligible target (pick another seed).
+
+    matched=True (v2.1.1) anchors the deterministic/stochastic comparison:
+    the start node is chosen on the DETERMINISTIC sibling world (identical
+    across modes, since reachability is purely topological), the target
+    stream drops the mode token, and the eligible set is intersected
+    across both sibling worlds -- so det and sto instances of a seed share
+    start, goal, AND intervention target. Target sharing applies to
+    irrelevant / silent_break / hard_removal; degradation under
+    matched=True is start-matched only (it has no deterministic arm).
+    Seeds whose cross-mode eligible set is empty raise ValueError.
     """
     assert condition in CONDITIONS, f"unknown condition {condition!r}"
+    orig_p_range = tuple(p_range)
     if deterministic:
         p_range = (1.0, 1.0)
+        if condition == "degradation":
+            raise ValueError(
+                "degradation is undefined in deterministic mode (v2.1): a "
+                "deterministic world admits only binary interventions -- "
+                "use silent_break (on-route) or irrelevant (off-route "
+                "p -> 0)")
 
     m0 = RoutingMDP.generate(n_nodes=n_nodes, seed=seed,
                              extra_edges=extra_edges, p_range=p_range,
                              obfuscate=obfuscate)
-    dist0, _ = m0.optimal()
-    starts = [n for n in m0.nodes if n != m0.goal and dist0[n] < INF]
-    start = max(starts, key=lambda n: (dist0[n], n))   # farthest, det. tie
+    det_w = sto_w = None
+    if matched:
+        det_w = (m0 if deterministic else
+                 RoutingMDP.generate(n_nodes=n_nodes, seed=seed,
+                                     extra_edges=extra_edges,
+                                     p_range=(1.0, 1.0),
+                                     obfuscate=obfuscate))
+        sto_w = (m0 if not deterministic else
+                 RoutingMDP.generate(n_nodes=n_nodes, seed=seed,
+                                     extra_edges=extra_edges,
+                                     p_range=orig_p_range,
+                                     obfuscate=obfuscate))
+        dist_det, _ = det_w.optimal()
+        starts = [n for n in det_w.nodes
+                  if n != det_w.goal and dist_det[n] < INF]
+        start = max(starts, key=lambda n: (dist_det[n], n))
+    else:
+        dist0, _ = m0.optimal()
+        starts = [n for n in m0.nodes if n != m0.goal and dist0[n] < INF]
+        start = max(starts, key=lambda n: (dist0[n], n))  # farthest, det. tie
     route0, _ = m0.optimal_route(start)
     route0_edges = list(zip(route0, route0[1:]))
 
-    cs = f"{seed}|{condition}|{'det' if deterministic else 'sto'}|{change_seed}"
+    # v2.1: silent_break and hard_removal share one target stream, so the
+    # matched pair intervenes on the SAME link for a given (seed, mode).
+    # v2.1.1: matched=True drops the mode token entirely, so det and sto
+    # draw the SAME target from the cross-mode eligible set.
+    fam = ("break" if condition in ("silent_break", "hard_removal")
+           else condition)
+    mode_tok = ("matched" if matched
+                else ("det" if deterministic else "sto"))
+    cs = f"{seed}|{fam}|{mode_tok}|{change_seed}"
     crng = random.Random(cs)
     ls = f"{seed}|labels"
     labels = assign_labels(m0, random.Random(ls))
 
     m1 = m0.copy()
     if condition == "irrelevant":
-        off = sorted(e for e in m0.p if e not in set(route0_edges))
+        # v2.1: eligibility = off EVERY optimal route (not just the
+        # canonical one), so the preservation guarantee survives ties.
+        # Deterministic mode uses a binary perturbation (p -> 0): the
+        # world stays {0, 1} and the optimum is provably untouched.
+        off = edges_off_all_optimal_routes(m0, start)
+        if matched:
+            off = sorted(set(off)
+                         & set(edges_off_all_optimal_routes(det_w, start))
+                         & set(edges_off_all_optimal_routes(sto_w, start)))
         if not off:
-            raise ValueError(f"seed {seed}: no off-route link to perturb")
+            raise ValueError(
+                f"seed {seed}: no link off every optimal route to perturb"
+                + (" in both modes (matched)" if matched else ""))
         u, v = crng.choice(off)
         old = m0.p[(u, v)]
-        new = max(0.05, round(old * degradation_factor, 2))
-        if new >= old:
-            new = round(old / 2.0, 3)
-        m1.set_link_prob(u, v, new, mode="degrade")
+        if deterministic:
+            m1.set_link_prob(u, v, 0.0, mode="silent")
+        else:
+            new = max(0.05, round(old * degradation_factor, 2))
+            if new >= old:
+                new = round(old / 2.0, 3)
+            m1.set_link_prob(u, v, new, mode="degrade")
     elif condition == "degradation":
         u, v = crng.choice(route0_edges)
         old = m0.p[(u, v)]
@@ -477,10 +600,16 @@ def make_pair(seed, condition, *, deterministic=False, n_nodes=8,
         m1.set_link_prob(u, v, new, mode="degrade")
     elif condition in ("silent_break", "hard_removal"):
         cands = breakable_route_links(m1, start)
+        if matched:
+            cands = sorted(
+                set(cands)
+                & set(breakable_route_links(det_w.copy(), start))
+                & set(breakable_route_links(sto_w.copy(), start)))
         if not cands:
             raise ValueError(
-                f"seed {seed}: no eligible break keeps the goal reachable; "
-                f"use a different seed")
+                f"seed {seed}: no eligible break keeps the goal reachable"
+                + (" in both modes (matched)" if matched else "")
+                + "; use a different seed")
         u, v = crng.choice(cands)
         m1.break_link(u, v,
                       mode="silent" if condition == "silent_break"
@@ -503,8 +632,9 @@ def make_pair(seed, condition, *, deterministic=False, n_nodes=8,
     oracle = build_oracle(m0, m1, start, labels)
     seeds = {"graph_seed": seed, "change_seed": cs, "label_seed": ls}
     params = {"n_nodes": n_nodes, "extra_edges": extra_edges,
-              "p_range": list(p_range), "obfuscate": obfuscate,
-              "degradation_factor": degradation_factor}
+              "p_range": list(orig_p_range), "obfuscate": obfuscate,
+              "degradation_factor": degradation_factor,
+              "matched": matched}
     return PairedInstance(condition, deterministic, m0, m1, start, labels,
                           change, oracle, seeds, params)
 
@@ -692,14 +822,31 @@ def render_evidence(episodes, labels=None, shuffle_seed="0"):
 
 
 def paired_evidence(inst, k=5, evidence_seed=0, horizon=60,
-                    max_episodes=5000):
+                    max_episodes=300, max_resamples=4):
     """Balanced pre AND post evidence for a PairedInstance: >= k attempts
     per listed (state, action) pair in each world, all five renderings,
-    plus verifiable per-pair counts."""
-    r0 = random.Random(f"{evidence_seed}|pre")
-    r1 = random.Random(f"{evidence_seed}|post")
-    ep0, c0 = collect_balanced(inst.m0, k, r0, horizon, max_episodes)
-    ep1, c1 = collect_balanced(inst.m1, k, r1, horizon, max_episodes)
+    plus verifiable per-pair counts.
+
+    v2.1 budget rule: collection is capped at `max_episodes` episodes per
+    world. If coverage is not reached, collection deterministically
+    resamples with a derived evidence seed (up to `max_resamples` times)
+    and raises RuntimeError afterwards. The seed actually used is
+    reported as `evidence_seed_effective`."""
+    last = None
+    for r in range(max_resamples + 1):
+        eff = evidence_seed if r == 0 else f"{evidence_seed}|resample{r}"
+        try:
+            r0 = random.Random(f"{eff}|pre")
+            r1 = random.Random(f"{eff}|post")
+            ep0, c0 = collect_balanced(inst.m0, k, r0, horizon, max_episodes)
+            ep1, c1 = collect_balanced(inst.m1, k, r1, horizon, max_episodes)
+            break
+        except RuntimeError as exc:
+            last = exc
+    else:
+        raise RuntimeError(
+            f"coverage not reached after {max_resamples + 1} evidence "
+            f"seeds (max_episodes={max_episodes}): {last}")
     t0, s0 = attempt_stats(ep0)
     t1, s1 = attempt_stats(ep1)
 
@@ -711,13 +858,16 @@ def paired_evidence(inst, k=5, evidence_seed=0, horizon=60,
     return {
         "k_per_pair": k,
         "evidence_seed": evidence_seed,
+        "evidence_seed_effective": eff,
+        "resamples": r,
+        "horizon": horizon,
+        "max_episodes": max_episodes,
         "episodes_pre": len(ep0),
         "episodes_post": len(ep1),
         "min_attempts_pre": min(c0.values()) if c0 else 0,
         "min_attempts_post": min(c1.values()) if c1 else 0,
-        "pre": render_evidence(ep0, inst.labels, f"{evidence_seed}|shuf-pre"),
-        "post": render_evidence(ep1, inst.labels,
-                                f"{evidence_seed}|shuf-post"),
+        "pre": render_evidence(ep0, inst.labels, f"{eff}|shuf-pre"),
+        "post": render_evidence(ep1, inst.labels, f"{eff}|shuf-post"),
         "counts_pre": counts_json(t0, s0),
         "counts_post": counts_json(t1, s1),
     }
@@ -730,13 +880,38 @@ def paired_evidence(inst, k=5, evidence_seed=0, horizon=60,
 
 def score_route(mdp, path, start):
     """Score a proposed node route by execution semantics, never
-    self-report: validity, exact expected cost, and regret vs the exact
-    optimum. `path` may be None (parse failure) -> invalid."""
+    self-report. v2.1 separates the failure statuses:
+
+      valid_finite ........ proper start->goal route, every edge listed
+                            with p > 0 -> expected_cost and regret
+      silent_broken_edge .. structurally legal route crossing a listed
+                            p = 0 link (infinite expected cost)
+      illegal_action ...... a hop that is not in the action set (unknown
+                            or hard-removed edge)
+      invalid_route ....... empty / wrong start / does not end at goal
+                            (also used for path=None, i.e. parse failure)
+
+    `valid` is kept for v2.0 compatibility (True iff valid_finite).
+    Any valid_finite route with regret == 0 counts as optimal; exact
+    equality with the canonical oracle route is NOT required
+    (oracle.route_unique stays diagnostic)."""
     dist, _ = mdp.optimal()
     opt = dist.get(start, INF)
-    cost = mdp.plan_cost(path) if path else INF
-    valid = bool(path) and path[0] == start and cost < INF
+    status, cost = "invalid_route", INF
+    if path and path[0] == start and path[-1] == mdp.goal:
+        status, cost = "valid_finite", 0.0
+        for u, v in zip(path, path[1:]):
+            pr = mdp.p.get((u, v))
+            if pr is None:
+                status, cost = "illegal_action", INF
+                break
+            if pr <= 0:
+                status, cost = "silent_broken_edge", INF
+                break
+            cost += 1.0 / pr
+    valid = status == "valid_finite"
     return {
+        "status": status,
         "valid": valid,
         "expected_cost": round(cost, 4) if valid else None,
         "optimal_cost": round(opt, 4) if opt < INF else None,
@@ -764,7 +939,10 @@ def regret(mdp, path, start):
 # JSON serialization (the interface Pavlos's prompts/evaluator consume)
 # --------------------------------------------------------------------------
 
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = "2.1"
+
+PROMPT_RENDERINGS = ("F1_log", "F2_ordered", "F2_shuffled", "F3_stats",
+                     "F4_narrative")
 
 
 def _edges_json(mdp, labels):
@@ -803,10 +981,136 @@ def pair_to_json(inst, evidence=None):
         "oracle": inst.oracle,
         "evidence": evidence,
         "model_visible": ["nodes", "start", "goal", "legal_actions_pre",
-                          "legal_actions_post", "evidence"],
+                          "legal_actions_post"],
+        "prompt_projection": {
+            "builder": "prompt_view",
+            "renderings": list(PROMPT_RENDERINGS),
+            "default_budget_per_pair": 5,
+            "note": ("v2.1: prompts must be built with prompt_view(record, "
+                     "rendering, periods, budget_per_pair); the raw "
+                     "evidence object (all renderings + counts_* keyed by "
+                     "true edges) is evaluator-only")},
         "evaluator_only": ["world_pre", "world_post", "change", "oracle",
-                           "seeds", "params", "counts_*"],
+                           "seeds", "params", "evidence", "counts_*"],
     }
+
+
+# --------------------------------------------------------------------------
+# Prompt-safe projection (v2.1) -- the ONLY object a prompt may serialize
+# --------------------------------------------------------------------------
+
+
+def _rebuild_instance(record):
+    """Reconstruct the PairedInstance a JSON record was generated from
+    (all draws are string-seeded, so records are self-describing).
+    Raises ValueError if the reconstruction does not match the record."""
+    params = record["params"]
+    tail = record["seeds"]["change_seed"].split("|", 3)[3]
+    change_seed = None if tail == "None" else tail
+    inst = make_pair(record["seeds"]["graph_seed"], record["condition"],
+                     deterministic=record["deterministic"],
+                     matched=params.get("matched", False),
+                     n_nodes=params["n_nodes"],
+                     extra_edges=params["extra_edges"],
+                     p_range=tuple(params["p_range"]),
+                     obfuscate=params["obfuscate"],
+                     degradation_factor=params["degradation_factor"],
+                     change_seed=change_seed)
+    check = json.loads(json.dumps(pair_to_json(inst)))
+    for key in ("nodes", "start", "goal", "change", "legal_actions_post"):
+        if check[key] != record[key]:
+            raise ValueError(f"record does not match its seeds ({key})")
+    return inst
+
+
+def _subsample_episodes(episodes, budget, rng):
+    """Uniform per-pair subsample of at most `budget` events per listed
+    (state, action) pair, preserving episode membership and within-episode
+    order. Original t values are kept, so elisions show as t-jumps."""
+    where = defaultdict(list)
+    for i, ep in enumerate(episodes):
+        for j, a in enumerate(ep):
+            where[(a.node, a.chosen)].append((i, j))
+    keep = set()
+    for pair in sorted(where):
+        slots = where[pair]
+        keep.update(slots if len(slots) <= budget
+                    else rng.sample(slots, budget))
+    out = []
+    for i, ep in enumerate(episodes):
+        kept = [a for j, a in enumerate(ep) if (i, j) in keep]
+        if kept:
+            out.append(kept)
+    return out
+
+
+def prompt_view(record, rendering="F2_shuffled", periods=("pre", "post"),
+                budget_per_pair=5, budget_seed=0):
+    """Build the prompt-safe projection of a JSON record.
+
+    Returns ONLY: one rendering of the selected period(s), the matching
+    action menus, nodes/start/goal, the budget, and realized sizes.
+    Never counts_*, worlds, change, oracle, seeds, or other renderings.
+
+    Events are subsampled to an EXACT per-pair budget (uniform per pair,
+    outcome-blind, deterministic given budget_seed); exactness holds
+    because 0 < budget_per_pair <= k is enforced (the coverage guarantee
+    is only a MINIMUM of k attempts per pair). budget_per_pair=None
+    returns the full, unsubsampled evidence -- evaluator-side use only.
+    The same subsampled event set underlies every rendering choice, so
+    the format comparison stays matched, and the silently broken pair
+    still contributes exactly `budget_per_pair` all-drop observations
+    post-change."""
+    assert rendering in PROMPT_RENDERINGS, f"unknown rendering {rendering!r}"
+    periods = tuple(periods)
+    assert periods and all(p in ("pre", "post") for p in periods)
+    ev = record["evidence"]
+    assert ev, "record carries no evidence"
+    k = ev["k_per_pair"]
+    if budget_per_pair is not None and not (0 < budget_per_pair <= k):
+        raise ValueError(
+            f"budget_per_pair must satisfy 0 < B <= k={k} (got "
+            f"{budget_per_pair}); the coverage guarantee is only >= k "
+            f"attempts per pair, so only B <= k is EXACT. Pass None for "
+            f"the full, unsubsampled evidence (evaluator-side only).")
+    inst = _rebuild_instance(record)
+    eff = ev.get("evidence_seed_effective", ev["evidence_seed"])
+    horizon = ev.get("horizon", 60)
+    max_ep = ev.get("max_episodes", 300)
+    out_ev, realized = {}, {}
+    for period in periods:
+        mdp = inst.m0 if period == "pre" else inst.m1
+        rng = random.Random(f"{eff}|{period}")
+        eps, _ = collect_balanced(mdp, k, rng, horizon, max_ep)
+        if budget_per_pair is None:
+            sub = eps
+        else:
+            srng = random.Random(f"{eff}|prompt|{period}|{budget_per_pair}"
+                                 f"|{budget_seed}")
+            sub = _subsample_episodes(eps, budget_per_pair, srng)
+        text = render_evidence(
+            sub, inst.labels,
+            f"{eff}|prompt-shuf-{period}|{budget_seed}")[rendering]
+        out_ev[period] = text
+        realized[period] = {"events": sum(len(ep) for ep in sub),
+                            "episodes": len(sub),
+                            "chars": len(text)}
+    view = {
+        "schema_version": SCHEMA_VERSION,
+        "rendering": rendering,
+        "periods": list(periods),
+        "budget_per_pair": budget_per_pair,
+        "nodes": record["nodes"],
+        "start": record["start"],
+        "goal": record["goal"],
+        "evidence": out_ev,
+        "realized": realized,
+    }
+    for period in periods:
+        view[f"legal_actions_{period}"] = record[f"legal_actions_{period}"]
+    blob = json.dumps(view)
+    assert "counts_" not in blob and '"world' not in blob
+    return view
 
 
 # --------------------------------------------------------------------------
@@ -858,8 +1162,9 @@ if __name__ == "__main__":
     import os
     outdir = os.environ.get("OUT", ".")
     for tag, det in (("deterministic", True), ("stochastic", False)):
-        inst = make_pair(seed=7, condition="silent_break", deterministic=det)
-        ev = paired_evidence(inst, k=5, evidence_seed=11)
+        inst = make_pair(seed=7, condition="silent_break", deterministic=det,
+                         matched=True)
+        ev = paired_evidence(inst, k=5, evidence_seed=0)
         _summarize(inst, ev)
         path = os.path.join(outdir, f"example_{tag}_silent_break.json")
         with open(path, "w") as f:
