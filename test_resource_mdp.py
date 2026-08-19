@@ -21,9 +21,10 @@ import random
 
 from resource_mdp import (CONDITIONS, RoutingMDP, assign_labels,
                           breakable_route_links, broken_link_usage,
-                          collect_balanced, fixed_policy, legal_actions,
-                          make_pair, optimal_policy, pair_to_json,
-                          paired_evidence, rollout, route_from_actions,
+                          collect_balanced, edges_off_all_optimal_routes,
+                          fixed_policy, legal_actions, make_pair,
+                          optimal_policy, pair_to_json, paired_evidence,
+                          prompt_view, rollout, route_from_actions,
                           score_route)
 
 INF = float("inf")
@@ -235,7 +236,7 @@ def test_json_roundtrip():
         ev = paired_evidence(inst, k=3, evidence_seed=9)
         blob = json.dumps(pair_to_json(inst, ev))
         back = json.loads(blob)
-        assert back["schema_version"] == "2.0"
+        assert back["schema_version"] == "2.1"
         assert back["change"]["edge"]["from"] == inst.change["edge"][0]
         assert back["oracle"]["post"]["optimal_cost"] is not None
         for f in ("F1_log", "F2_ordered", "F2_shuffled", "F3_stats",
@@ -259,6 +260,131 @@ def test_multi_seed_sweep():
           % ok)
 
 
+def test_v21_shared_break_target():
+    for det in (False, True):
+        for seed in SEEDS[:4]:
+            s = make_pair(seed, "silent_break", deterministic=det)
+            h = make_pair(seed, "hard_removal", deterministic=det)
+            assert s.change["edge"] == h.change["edge"], \
+                "silent break and hard removal must hit the same link"
+    print("PASS v2.1 shared target: silent_break == hard_removal per "
+          "(seed, mode)")
+
+
+def test_v21_irrelevant_off_all_optimal_routes():
+    hits = 0
+    for seed in SEEDS:
+        for det in (False, True):
+            try:
+                inst = make_pair(seed, "irrelevant", deterministic=det)
+            except ValueError:
+                continue
+            hits += 1
+            off = set(edges_off_all_optimal_routes(inst.m0, inst.start))
+            assert inst.change["edge"] in off, \
+                "target must be off EVERY optimal route"
+            assert (inst.oracle["pre"]["route_unique"]
+                    == inst.oracle["post"]["route_unique"]), \
+                "irrelevant change must not flip route uniqueness"
+            assert (inst.oracle["pre"]["optimal_route"]
+                    == inst.oracle["post"]["optimal_route"])
+            if det:
+                assert inst.change["new_p"] == 0.0
+                assert all(p in (0.0, 1.0) for p in inst.m1.p.values()), \
+                    "deterministic post world must stay binary"
+    assert hits
+    print("PASS v2.1 irrelevant: off every optimal route, uniqueness "
+          "preserved, det post world binary (%d instances)" % hits)
+
+
+def test_v21_det_degradation_undefined():
+    try:
+        make_pair(SEEDS[0], "degradation", deterministic=True)
+    except ValueError as exc:
+        assert "deterministic" in str(exc)
+        print("PASS v2.1 deterministic degradation raises ValueError")
+        return
+    raise AssertionError("deterministic degradation must be rejected")
+
+
+def test_v21_obfuscation_pure_relabeling():
+    for seed in SEEDS[:4]:
+        plain = RoutingMDP.generate(seed=seed, obfuscate=False)
+        opaque = RoutingMDP.generate(seed=seed, obfuscate=True)
+        ip = {n: i for i, n in enumerate(plain.nodes)}
+        io = {n: i for i, n in enumerate(opaque.nodes)}
+        assert (sorted((ip[u], ip[v], p) for (u, v), p in plain.p.items())
+                == sorted((io[u], io[v], p)
+                          for (u, v), p in opaque.p.items())), \
+            "obfuscation must be pure relabeling"
+    print("PASS v2.1 obfuscation: identical indexed weighted graph")
+
+
+def test_v21_score_statuses():
+    inst = make_pair(SEEDS[2], "silent_break")
+    stale = inst.oracle["pre"]["optimal_route"]
+    s = score_route(inst.m1, stale, inst.start)
+    assert s["status"] == "silent_broken_edge" and not s["valid"]
+    assert s["expected_cost"] is None
+    hard = make_pair(SEEDS[2], "hard_removal")
+    h = score_route(hard.m1, hard.oracle["pre"]["optimal_route"],
+                    hard.start)
+    assert h["status"] == "illegal_action" and not h["valid"]
+    ok = score_route(inst.m1, inst.oracle["post"]["optimal_route"],
+                     inst.start)
+    assert ok["status"] == "valid_finite" and abs(ok["regret"]) < 1e-9
+    bad = score_route(inst.m1, [inst.start], inst.start)
+    assert bad["status"] == "invalid_route"
+    assert score_route(inst.m1, None, inst.start)["status"] == \
+        "invalid_route"
+    print("PASS v2.1 score statuses: silent / illegal / valid / invalid "
+          "are distinct")
+
+
+def test_v21_prompt_view():
+    inst = make_pair(SEEDS[0], "silent_break")
+    ev = paired_evidence(inst, k=4, evidence_seed=3)
+    record = json.loads(json.dumps(pair_to_json(inst, ev)))
+    view = prompt_view(record, rendering="F3_stats", budget_per_pair=4)
+    blob = json.dumps(view)
+    for banned in ("counts_", "world_pre", "world_post", "oracle",
+                   "\"change\"", "graph_seed"):
+        assert banned not in blob, f"leak: {banned}"
+    n_pairs_post = len(record["evidence"]["counts_post"])
+    assert view["realized"]["post"]["events"] == 4 * n_pairs_post, \
+        "exact per-pair budget"
+    u, v = inst.change["edge"]
+    lab = inst.labels[(u, v)]
+    assert f"{u} {lab}: 4 attempts, 0 delivered" in view["evidence"]["post"], \
+        "broken pair keeps exactly budget all-drop observations"
+    big = prompt_view(record, rendering="F3_stats", budget_per_pair=10**6)
+    assert big["evidence"]["post"] == record["evidence"]["post"]["F3_stats"], \
+        "unbounded budget reproduces the stored rendering"
+    one = prompt_view(record, rendering="F2_shuffled", periods=("post",),
+                      budget_per_pair=4)
+    assert "legal_actions_pre" not in one and "pre" not in one["evidence"]
+    print("PASS v2.1 prompt_view: no evaluator leak, exact per-pair "
+          "budget, stored renderings reproduced at full budget")
+
+
+def test_v21_examples_in_sync():
+    import os
+    checked = 0
+    for det, name in ((True, "example_deterministic_silent_break.json"),
+                      (False, "example_stochastic_silent_break.json")):
+        if not os.path.exists(name):
+            continue
+        rec = json.load(open(name))
+        inst = make_pair(7, "silent_break", deterministic=det)
+        ev = paired_evidence(inst, k=rec["evidence"]["k_per_pair"],
+                             evidence_seed=rec["evidence"]["evidence_seed"])
+        assert json.loads(json.dumps(pair_to_json(inst, ev))) == rec, \
+            f"{name} is stale -- regenerate with `python3 resource_mdp.py`"
+        checked += 1
+    print("PASS v2.1 shipped examples regenerate exactly (%d files)"
+          % checked)
+
+
 if __name__ == "__main__":
     test_reproducibility()
     test_deterministic_same_code_path()
@@ -270,4 +396,11 @@ if __name__ == "__main__":
     test_usage_metric_endpoints()
     test_json_roundtrip()
     test_multi_seed_sweep()
+    test_v21_shared_break_target()
+    test_v21_irrelevant_off_all_optimal_routes()
+    test_v21_det_degradation_undefined()
+    test_v21_obfuscation_pure_relabeling()
+    test_v21_score_statuses()
+    test_v21_prompt_view()
+    test_v21_examples_in_sync()
     print("\nALL TESTS PASSED")
