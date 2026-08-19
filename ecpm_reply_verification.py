@@ -8,6 +8,11 @@ Against v2.1 it doubles as a regression check: expect different_target=0,
 post_world_has_stochastic_edge=0, and both examples regenerating with
 the evidence_seed stored in the files (now the default, 0).
 
+v2.1.1 adds matched_anchor_check: among seeds where matched=True
+constructs in both modes (794/1000), expect start and target equality
+100%; the shared-pre-route count is informational (the residual route
+difference is the uncertainty manipulation itself).
+
 Read-only. Run from the repo root:  python3 ecpm_reply_verification.py
 Checks:
   - seed-7 examples regenerate identically (with the evidence_seed stored
@@ -50,7 +55,8 @@ def check_examples() -> dict:
         r = json.loads(Path(name).read_text())
         es = r["evidence"]["evidence_seed"]
         k = r["evidence"]["k_per_pair"]
-        inst = make_pair(7, "silent_break", deterministic=det)
+        inst = make_pair(7, "silent_break", deterministic=det,
+                         matched=r["params"].get("matched", False))
         rec = json.loads(
             json.dumps(pair_to_json(inst, paired_evidence(inst, k=k, evidence_seed=es)))
         )
@@ -121,6 +127,26 @@ def silent_vs_hard(n: int) -> dict:
     return {"seed_mode_pairs": pairs, "same_target": same, "different_target": pairs - same}
 
 
+def matched_anchor_check(n: int) -> dict:
+    eligible = start_eq = target_eq = route_eq = 0
+    for seed in range(n):
+        try:
+            a = make_pair(seed, "silent_break", deterministic=True,
+                          matched=True)
+            b = make_pair(seed, "silent_break", deterministic=False,
+                          matched=True)
+        except ValueError:
+            continue
+        eligible += 1
+        start_eq += a.start == b.start
+        target_eq += a.change["edge"] == b.change["edge"]
+        route_eq += (a.oracle["pre"]["optimal_route"]
+                     == b.oracle["pre"]["optimal_route"])
+    return {"eligible": eligible, "start_equal": start_eq,
+            "target_equal": target_eq,
+            "same_pre_optimal_route": route_eq}
+
+
 def worst_case() -> dict:
     i60 = make_pair(60, "silent_break", deterministic=True)
     e60 = paired_evidence(i60, k=5, evidence_seed=0)
@@ -148,6 +174,7 @@ def main() -> None:
         "det_irrelevant_stochastic_post": det_irrelevant(args.seeds),
         "matched_option_i_yield": matched_option_i_yield(args.seeds),
         "silent_vs_hard_target": silent_vs_hard(args.pair_seeds),
+        "matched_anchors": matched_anchor_check(args.seeds),
         "worst_case_budget": worst_case(),
     }
     print(json.dumps(report, indent=2, sort_keys=True))

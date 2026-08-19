@@ -5,12 +5,17 @@ Response parsing/scoring: `ecpm_parser.py` + `parser_fixtures.json` +
 `test_ecpm_parser.py` (Section 7 is now FROZEN, not a proposal).
 The two example files (`example_deterministic_silent_break.json`,
 `example_stochastic_silent_break.json`) are instances of exactly this
-schema: seed 7, condition `silent_break`, `k=5`, `evidence_seed=0`.
+schema: seed 7, condition `silent_break`, `matched=True`, `k=5`,
+`evidence_seed=0` -- a properly anchored det/sto showcase pair.
 
 v2.1 resolves the six pre-freeze review items (2026-08-19): matched
 targets, strict irrelevant control, binary deterministic mode, pure
 relabeling obfuscation, distinct score statuses, capped evidence with a
-prompt-safe projection, and a frozen response schema.
+prompt-safe projection, and a frozen response schema. v2.1.1 resolves
+the second review round: `matched=True` construction (shared start,
+goal, and target across det/sto), strict duplicate-safe preservation
+scoring, `0 < B <= k` budget validation, and the first-parseable-object
+parser wording.
 
 ## 1. Handoff table → implementation
 
@@ -20,6 +25,7 @@ prompt-safe projection, and a frozen response schema.
 | Deterministic + stochastic, same interface | `deterministic=True` sets `p_range=(1,1)` through the same code path; **topology is identical per seed across modes** |
 | Five conditions | `condition ∈ {no_change, irrelevant, degradation, silent_break, hard_removal}` (`degradation` is stochastic-only, see §4) |
 | **Matched break target (v2.1)** | `silent_break` and `hard_removal` draw from ONE shared target stream → same link per (seed, mode) |
+| **Matched det/sto anchors (v2.1.1)** | `make_pair(..., matched=True)`: shared start, goal, AND intervention target across modes (eligible-set intersection; ~79% of seeds construct; ValueError otherwise) |
 | Balanced per-(s,a) pre/post evidence | `paired_evidence(inst, k, evidence_seed)` — ≥ k attempts per listed pair in each world; capped episodes + deterministic resampling (§6) |
 | **Prompt-safe projection (v2.1)** | `prompt_view(record, rendering, periods, budget_per_pair)` — the ONLY object a prompt may serialize (§6) |
 | Oracle metadata | `PairedInstance.oracle` — pre/post solvability, optimal route/cost, tie info, alternative proper route |
@@ -29,9 +35,10 @@ prompt-safe projection, and a frozen response schema.
 ## 2. Core API (field names to code against)
 
 ```python
-inst = make_pair(seed, condition, deterministic=False, n_nodes=8,
-                 extra_edges=6, p_range=(0.6, 0.95), obfuscate=False,
-                 degradation_factor=0.5, change_seed=None)
+inst = make_pair(seed, condition, deterministic=False, matched=False,
+                 n_nodes=8, extra_edges=6, p_range=(0.6, 0.95),
+                 obfuscate=False, degradation_factor=0.5,
+                 change_seed=None)
 # ValueError: deterministic degradation (undefined in v2.1), or no
 # eligible target for the requested condition on this seed.
 
@@ -40,6 +47,8 @@ ev = paired_evidence(inst, k=5, evidence_seed=0, horizon=60,
 record = pair_to_json(inst, ev)          # the full JSON instance (§3)
 view = prompt_view(record, rendering="F2_shuffled",
                    periods=("pre", "post"), budget_per_pair=5)
+# ValueError unless 0 < budget_per_pair <= k (only B <= k is EXACT);
+# budget_per_pair=None returns the full evidence (evaluator-side only).
 ```
 
 `RoutingMDP` internals the evaluator may touch: unchanged from v2.0
@@ -83,6 +92,18 @@ Eligibility for breaks = `breakable_route_links` (reachability preserved);
 for `irrelevant` = `edges_off_all_optimal_routes`. `make_pair` raises
 ValueError on seeds with an empty eligible set.
 
+**Matched mode (v2.1.1).** `matched=True` anchors the det/sto
+comparison: the start is chosen on the deterministic sibling world
+(identical across modes, since reachability is purely topological), the
+target stream drops the mode token, and the eligible set is intersected
+across both sibling worlds -- det and sto instances of a seed then share
+start, goal, and intervention target (`params.matched` records the
+flag). Target sharing covers `irrelevant`/`silent_break`/`hard_removal`;
+`degradation` is start-matched only. Yield: 794/1000 seeds construct;
+among them start and target agree 100%, and 652 also share the
+pre-change optimal route (the residual route difference IS the
+uncertainty manipulation and is reported, not hidden).
+
 ## 5. `oracle` — evaluator ground truth
 
 Unchanged from v2.0. Reminder: any `valid_finite` route with regret == 0
@@ -113,8 +134,12 @@ prompt_view(record, rendering, periods, budget_per_pair=5, budget_seed=0)
 which returns ONE rendering of the selected period(s), the matching
 action menus, `nodes/start/goal`, and realized sizes (`events`,
 `episodes`, `chars` per period) — never counts, worlds, change, oracle,
-or seeds. Events are subsampled to an EXACT per-pair budget (uniform per
-pair, outcome-blind, deterministic given `budget_seed`); the same
+or seeds. `budget_per_pair` must satisfy `0 < B <= k` (ValueError
+otherwise): the coverage guarantee is only a minimum of k attempts per
+pair, so only `B <= k` is EXACT; `budget_per_pair=None` returns the
+full, unsubsampled evidence for evaluator-side use. Events are
+subsampled to an EXACT per-pair budget (uniform per pair, outcome-blind,
+deterministic given `budget_seed`); the same
 subsampled event set underlies every rendering choice, so the
 format comparison stays matched, and the silently broken pair still
 contributes exactly `budget_per_pair` all-drop observations post-change.
@@ -126,8 +151,9 @@ t-jumps inside an episode. Log `realized` for every prompt.
 Implementation: `ecpm_parser.py` (stdlib; consumes raw model text + the
 JSON record). Acceptance cases: `parser_fixtures.json` (format level) and
 `test_ecpm_parser.py` (instance level). One JSON object per probe; the
-FIRST balanced `{...}` object in the reply is parsed; surrounding prose
-and code fences are ignored; unknown extra fields are ignored.
+FIRST balanced `{...}` block that parses as JSON is used -- earlier
+non-parsing brace blocks, surrounding prose, and code fences are
+skipped; unknown extra fields inside the object are ignored.
 
 1. **Detection** — `{"changed": true|false}`. Truth:
    `condition != "no_change"` (`irrelevant` counts as changed).
@@ -135,8 +161,13 @@ and code fences are ignored; unknown extra fields are ignored.
    `change.edge.from` + `change.action`.
 3. **Preservation** — `{"pairs": [{"node", "action", "changed"}, ...]}`
    (optional numeric `"p"` per pair recorded). Truth: a pair changed iff
-   it is the intervention target; scored as accuracy over the queried
-   pairs.
+   it is the intervention target. **Strict scoring (v2.1.1):** the
+   evaluator always supplies the queried pairs, and the response must
+   answer every queried pair exactly once — any unqueried pair →
+   `unknown_pair`, any repeat → `duplicate_pair`, any missing pair →
+   `incomplete_response`. Accuracy (denominator = all queried pairs) is
+   reported only under `ok`, so omitting hard pairs or padding the
+   denominator is impossible.
 4. **Adaptation** — `{"route": [{"node", "action"}, ...]}`, the canonical
    representation: explicit state-action steps, ≤ 32 steps, starting at
    `start`; step i+1's node must equal the destination implied by step i
@@ -148,6 +179,7 @@ Statuses:
 | Layer | Statuses |
 | --- | --- |
 | parse | `ok`, `malformed_json`, `invalid_object`, `too_long` |
+| preservation | `unknown_pair`, `duplicate_pair`, `incomplete_response` |
 | route walk | `unknown_reference`, `discontinuous_route`, `incomplete_route` |
 | execution (POST world) | `valid_finite` (cost + regret), `silent_broken_edge` (legal route over a listed p = 0 link), `illegal_action` (hop not in the action set) |
 
@@ -164,10 +196,14 @@ deterministic post world binary; deterministic degradation raises;
 obfuscation preserves the indexed weighted graph; score statuses are
 distinct; `prompt_view` leaks nothing evaluator-only, enforces the exact
 per-pair budget, and reproduces the stored renderings at unbounded
-budget; the shipped seed-7 examples regenerate exactly.
-`test_ecpm_parser.py` covers the frozen Section 7 contract end to end.
+budget and rejects `B > k`; matched mode shares start/goal/target
+across modes and its records rebuild; the shipped seed-7 examples
+(matched) regenerate exactly. `test_ecpm_parser.py` covers the frozen
+Section 7 contract end to end, including the strict preservation
+statuses.
 
 Run: `python3 test_resource_mdp.py && python3 test_ecpm_parser.py`
-Audit: `python3 ecpm_pre_freeze_audit.py` (Pavlos, read-only) and
-`python3 ecpm_reply_verification.py` (regression numbers for the v2.1
-fixes; against v2.0 it reproduced the review findings).
+Audit: `python3 ecpm_pre_freeze_audit.py` (Pavlos, round 1),
+`python3 adversarial_review.py [seeds]` (Pavlos, round 2; committed with
+v2.1.1 adaptations), and `python3 ecpm_reply_verification.py`
+(regression numbers; against v2.0 it reproduced the review findings).

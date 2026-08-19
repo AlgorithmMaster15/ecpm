@@ -99,20 +99,47 @@ def test_other_probes():
     loc2 = run_probe(rec, "localization", json.dumps(
         {"node": ch["edge"]["from"], "action": "a99"}))
     assert loc2["scored"]["correct"] is False
-    # preservation: unchanged pair vs the target pair
+    # preservation: STRICT contract -- every queried pair exactly once
     target = (ch["edge"]["from"], ch["action"])
     other = next((e["from"], e["action"])
                  for e in rec["world_pre"]["edges"]
                  if (e["from"], e["action"]) != target)
-    raw = json.dumps({"pairs": [
+    queried = [{"node": other[0], "action": other[1]},
+               {"node": target[0], "action": target[1]}]
+    full = json.dumps({"pairs": [
         {"node": other[0], "action": other[1], "changed": False},
         {"node": target[0], "action": target[1], "changed": True}]})
-    pres = run_probe(rec, "preservation", raw)
+    pres = run_probe(rec, "preservation", full, queried_pairs=queried)
+    assert pres["scored"]["status"] == "ok"
     assert pres["scored"]["accuracy"] == 1.0
-    queried = [{"node": other[0], "action": other[1]}]
-    pres2 = run_probe(rec, "preservation", raw, queried_pairs=queried)
-    assert pres2["scored"]["n_scored"] == 1
-    print("PASS detection / localization / preservation ground truth")
+    assert pres["scored"]["n_scored"] == 2
+    one = json.dumps({"pairs": [
+        {"node": other[0], "action": other[1], "changed": False}]})
+    assert run_probe(rec, "preservation", one,
+                     queried_pairs=queried)["scored"]["status"] == \
+        "incomplete_response"
+    dup = json.dumps({"pairs": [
+        {"node": other[0], "action": other[1], "changed": False}] * 2})
+    assert run_probe(rec, "preservation", dup,
+                     queried_pairs=queried)["scored"]["status"] == \
+        "duplicate_pair"
+    unk = json.dumps({"pairs": [
+        {"node": other[0], "action": "a99", "changed": False}]})
+    assert run_probe(rec, "preservation", unk,
+                     queried_pairs=queried)["scored"]["status"] == \
+        "unknown_pair"
+    empty = json.dumps({"pairs": []})
+    assert run_probe(rec, "preservation", empty,
+                     queried_pairs=queried)["scored"]["status"] == \
+        "incomplete_response"
+    try:
+        run_probe(rec, "preservation", full)
+        raise AssertionError("queried_pairs must be required")
+    except ValueError:
+        pass
+    print("PASS detection / localization ground truth; preservation "
+          "strict: exact cover required, duplicates/unknown/missing "
+          "rejected")
 
 
 if __name__ == "__main__":

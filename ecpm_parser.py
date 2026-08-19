@@ -5,14 +5,21 @@ Consumes raw model output (free text) and the instance JSON record
 produced by `pair_to_json`. Pure stdlib; needs nothing but the record.
 
 Frozen response objects (one JSON object per probe; the FIRST balanced
-{...} object found in the reply is parsed, surrounding prose and code
-fences are ignored; unknown extra fields are ignored):
+{...} block that parses as JSON is used -- earlier non-parsing brace
+blocks, surrounding prose, and code fences are skipped/ignored; unknown
+extra fields inside the object are ignored):
 
   detection ...... {"changed": true|false}
   localization ... {"node": "<node>", "action": "aK"}
   preservation ... {"pairs": [{"node": "<node>", "action": "aK",
                                "changed": true|false}, ...]}
-                   optional numeric "p" per pair is recorded, not required
+                   optional numeric "p" per pair is recorded, not
+                   required. Scoring is STRICT (v2.1.1): exactly one
+                   response per queried pair -- an unqueried pair gives
+                   status unknown_pair, a repeated pair duplicate_pair,
+                   a missing pair incomplete_response; accuracy is
+                   reported only when every queried pair is answered
+                   exactly once.
   adaptation ..... {"route": [{"node": "<node>", "action": "aK"}, ...]}
                    canonical route representation: explicit state-action
                    steps; at most MAX_ROUTE_STEPS steps; the route must
@@ -20,6 +27,7 @@ fences are ignored; unknown extra fields are ignored):
                    destination implied by step i.
 
 Parse statuses:   ok | malformed_json | invalid_object | too_long
+Preservation:     unknown_pair | duplicate_pair | incomplete_response
 Adaptation walk:  unknown_reference | discontinuous_route |
                   incomplete_route
 Adaptation score: valid_finite | silent_broken_edge | illegal_action
@@ -178,26 +186,41 @@ def score_localization(record, parsed):
             "truth": {"node": ch["edge"]["from"], "action": ch["action"]}}
 
 
-def score_preservation(record, parsed, queried_pairs=None):
-    """Ground truth: a (node, action) pair changed iff it is the
-    intervention target. If `queried_pairs` is given (list of
-    {"node","action"}), only those pairs are scored."""
+def score_preservation(record, parsed, queried_pairs):
+    """STRICT scoring (v2.1.1). `queried_pairs` (list of {"node",
+    "action"}) is REQUIRED: the probe always names the pairs it asks
+    about. The response must answer every queried pair exactly once:
+
+      any pair not in the queried set .... status "unknown_pair"
+      any queried pair repeated .......... status "duplicate_pair"
+      any queried pair missing ........... status "incomplete_response"
+
+    Accuracy (over ALL queried pairs) is reported only under "ok", so a
+    model can neither omit hard pairs nor inflate the denominator.
+    Ground truth: a pair changed iff it is the intervention target."""
+    if queried_pairs is None:
+        raise ValueError("preservation scoring requires queried_pairs")
+    wanted = [(q["node"], q["action"]) for q in queried_pairs]
+    wset = set(wanted)
     ch = record["change"]
     target = (None if ch["edge"] is None
               else (ch["edge"]["from"], ch["action"]))
+    base = {"n_queried": len(wanted), "n_scored": 0, "accuracy": None}
     if parsed["status"] != "ok":
-        return {"status": parsed["status"], "n_scored": 0, "accuracy": None}
-    wanted = (None if queried_pairs is None else
-              {(q["node"], q["action"]) for q in queried_pairs})
-    n = correct = 0
+        return {"status": parsed["status"], **base}
+    seen = {}
     for item in parsed["pairs"]:
         key = (item["node"], item["action"])
-        if wanted is not None and key not in wanted:
-            continue
-        n += 1
-        correct += item["changed"] is (key == target)
-    return {"status": "ok", "n_scored": n,
-            "accuracy": (correct / n) if n else None}
+        if key not in wset:
+            return {"status": "unknown_pair", **base}
+        if key in seen:
+            return {"status": "duplicate_pair", **base}
+        seen[key] = item["changed"]
+    if len(seen) < len(wset):
+        return {"status": "incomplete_response", **base}
+    correct = sum(seen[key] is (key == target) for key in wanted)
+    return {"status": "ok", "n_queried": len(wanted),
+            "n_scored": len(wanted), "accuracy": correct / len(wanted)}
 
 
 def score_adaptation(record, parsed):

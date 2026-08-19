@@ -54,9 +54,12 @@ v2.1 pre-freeze revision (review 19/08/26):
   * Evidence budget ...... paired_evidence() caps episodes with a
                            deterministic resampling rule; prompt_view()
                            is the ONLY prompt-safe projection -- exact
-                           per-pair event budget, one rendering, no
-                           counts_*/worlds/oracle in a prompt, realized
-                           sizes reported.
+                           per-pair event budget (0 < B <= k enforced),
+                           one rendering, no counts_*/worlds/oracle in a
+                           prompt, realized sizes reported.
+  * Matched mode ......... make_pair(matched=True) anchors the det/sto
+                           comparison: shared start, goal, and
+                           intervention target per seed (v2.1.1).
 
 Grounding (unchanged from v1):
 
@@ -481,29 +484,41 @@ def build_oracle(m0, m1, start, labels):
             "cost_delta": delta}
 
 
-def make_pair(seed, condition, *, deterministic=False, n_nodes=8,
-              extra_edges=6, p_range=(0.6, 0.95), obfuscate=False,
-              degradation_factor=0.5, change_seed=None):
+def make_pair(seed, condition, *, deterministic=False, matched=False,
+              n_nodes=8, extra_edges=6, p_range=(0.6, 0.95),
+              obfuscate=False, degradation_factor=0.5, change_seed=None):
     """Generate a paired instance (M0, M1, exact diff, oracle metadata).
 
     condition:
       no_change ...... M1 = M0 (false-positive control)
-      irrelevant ..... degrade one link OFF the optimal route (guaranteed
-                       not to alter the optimal route: off-route costs can
-                       only rise, so the optimum is preserved)
+      irrelevant ..... perturb one link OFF every optimal route (stochastic:
+                       degrade; deterministic: p -> 0). Optimal route and
+                       uniqueness provably preserved.
       degradation .... degrade one link ON the optimal route
-                       (new_p = max(0.05, old_p * degradation_factor))
+                       (new_p = max(0.05, old_p * degradation_factor));
+                       stochastic-only.
       silent_break ... p -> 0 on an eligible optimal-route link (still
                        listed; goal stays reachable, forcing replanning)
       hard_removal ... same eligible set, link removed from the action set
 
     deterministic=True sets p_range=(1.0, 1.0) through the same code path
     (identical topology per seed). The eligible break is drawn at RANDOM
-    from breakable_route_links via a string-seeded rng -- pass a different
+    from the eligible set via a string-seeded rng -- pass a different
     change_seed to redraw on the same graph. Raises ValueError if the seed
-    admits no eligible break (pick another seed).
+    admits no eligible target (pick another seed).
+
+    matched=True (v2.1.1) anchors the deterministic/stochastic comparison:
+    the start node is chosen on the DETERMINISTIC sibling world (identical
+    across modes, since reachability is purely topological), the target
+    stream drops the mode token, and the eligible set is intersected
+    across both sibling worlds -- so det and sto instances of a seed share
+    start, goal, AND intervention target. Target sharing applies to
+    irrelevant / silent_break / hard_removal; degradation under
+    matched=True is start-matched only (it has no deterministic arm).
+    Seeds whose cross-mode eligible set is empty raise ValueError.
     """
     assert condition in CONDITIONS, f"unknown condition {condition!r}"
+    orig_p_range = tuple(p_range)
     if deterministic:
         p_range = (1.0, 1.0)
         if condition == "degradation":
@@ -516,17 +531,38 @@ def make_pair(seed, condition, *, deterministic=False, n_nodes=8,
     m0 = RoutingMDP.generate(n_nodes=n_nodes, seed=seed,
                              extra_edges=extra_edges, p_range=p_range,
                              obfuscate=obfuscate)
-    dist0, _ = m0.optimal()
-    starts = [n for n in m0.nodes if n != m0.goal and dist0[n] < INF]
-    start = max(starts, key=lambda n: (dist0[n], n))   # farthest, det. tie
+    det_w = sto_w = None
+    if matched:
+        det_w = (m0 if deterministic else
+                 RoutingMDP.generate(n_nodes=n_nodes, seed=seed,
+                                     extra_edges=extra_edges,
+                                     p_range=(1.0, 1.0),
+                                     obfuscate=obfuscate))
+        sto_w = (m0 if not deterministic else
+                 RoutingMDP.generate(n_nodes=n_nodes, seed=seed,
+                                     extra_edges=extra_edges,
+                                     p_range=orig_p_range,
+                                     obfuscate=obfuscate))
+        dist_det, _ = det_w.optimal()
+        starts = [n for n in det_w.nodes
+                  if n != det_w.goal and dist_det[n] < INF]
+        start = max(starts, key=lambda n: (dist_det[n], n))
+    else:
+        dist0, _ = m0.optimal()
+        starts = [n for n in m0.nodes if n != m0.goal and dist0[n] < INF]
+        start = max(starts, key=lambda n: (dist0[n], n))  # farthest, det. tie
     route0, _ = m0.optimal_route(start)
     route0_edges = list(zip(route0, route0[1:]))
 
     # v2.1: silent_break and hard_removal share one target stream, so the
     # matched pair intervenes on the SAME link for a given (seed, mode).
+    # v2.1.1: matched=True drops the mode token entirely, so det and sto
+    # draw the SAME target from the cross-mode eligible set.
     fam = ("break" if condition in ("silent_break", "hard_removal")
            else condition)
-    cs = f"{seed}|{fam}|{'det' if deterministic else 'sto'}|{change_seed}"
+    mode_tok = ("matched" if matched
+                else ("det" if deterministic else "sto"))
+    cs = f"{seed}|{fam}|{mode_tok}|{change_seed}"
     crng = random.Random(cs)
     ls = f"{seed}|labels"
     labels = assign_labels(m0, random.Random(ls))
@@ -538,9 +574,14 @@ def make_pair(seed, condition, *, deterministic=False, n_nodes=8,
         # Deterministic mode uses a binary perturbation (p -> 0): the
         # world stays {0, 1} and the optimum is provably untouched.
         off = edges_off_all_optimal_routes(m0, start)
+        if matched:
+            off = sorted(set(off)
+                         & set(edges_off_all_optimal_routes(det_w, start))
+                         & set(edges_off_all_optimal_routes(sto_w, start)))
         if not off:
             raise ValueError(
-                f"seed {seed}: no link off every optimal route to perturb")
+                f"seed {seed}: no link off every optimal route to perturb"
+                + (" in both modes (matched)" if matched else ""))
         u, v = crng.choice(off)
         old = m0.p[(u, v)]
         if deterministic:
@@ -559,10 +600,16 @@ def make_pair(seed, condition, *, deterministic=False, n_nodes=8,
         m1.set_link_prob(u, v, new, mode="degrade")
     elif condition in ("silent_break", "hard_removal"):
         cands = breakable_route_links(m1, start)
+        if matched:
+            cands = sorted(
+                set(cands)
+                & set(breakable_route_links(det_w.copy(), start))
+                & set(breakable_route_links(sto_w.copy(), start)))
         if not cands:
             raise ValueError(
-                f"seed {seed}: no eligible break keeps the goal reachable; "
-                f"use a different seed")
+                f"seed {seed}: no eligible break keeps the goal reachable"
+                + (" in both modes (matched)" if matched else "")
+                + "; use a different seed")
         u, v = crng.choice(cands)
         m1.break_link(u, v,
                       mode="silent" if condition == "silent_break"
@@ -585,8 +632,9 @@ def make_pair(seed, condition, *, deterministic=False, n_nodes=8,
     oracle = build_oracle(m0, m1, start, labels)
     seeds = {"graph_seed": seed, "change_seed": cs, "label_seed": ls}
     params = {"n_nodes": n_nodes, "extra_edges": extra_edges,
-              "p_range": list(p_range), "obfuscate": obfuscate,
-              "degradation_factor": degradation_factor}
+              "p_range": list(orig_p_range), "obfuscate": obfuscate,
+              "degradation_factor": degradation_factor,
+              "matched": matched}
     return PairedInstance(condition, deterministic, m0, m1, start, labels,
                           change, oracle, seeds, params)
 
@@ -961,6 +1009,7 @@ def _rebuild_instance(record):
     change_seed = None if tail == "None" else tail
     inst = make_pair(record["seeds"]["graph_seed"], record["condition"],
                      deterministic=record["deterministic"],
+                     matched=params.get("matched", False),
                      n_nodes=params["n_nodes"],
                      extra_edges=params["extra_edges"],
                      p_range=tuple(params["p_range"]),
@@ -1004,28 +1053,41 @@ def prompt_view(record, rendering="F2_shuffled", periods=("pre", "post"),
     Never counts_*, worlds, change, oracle, seeds, or other renderings.
 
     Events are subsampled to an EXACT per-pair budget (uniform per pair,
-    outcome-blind, deterministic given budget_seed); the same subsampled
-    event set underlies every rendering choice, so the format comparison
-    stays matched, and the silently broken pair still contributes exactly
-    `budget_per_pair` all-drop observations post-change."""
+    outcome-blind, deterministic given budget_seed); exactness holds
+    because 0 < budget_per_pair <= k is enforced (the coverage guarantee
+    is only a MINIMUM of k attempts per pair). budget_per_pair=None
+    returns the full, unsubsampled evidence -- evaluator-side use only.
+    The same subsampled event set underlies every rendering choice, so
+    the format comparison stays matched, and the silently broken pair
+    still contributes exactly `budget_per_pair` all-drop observations
+    post-change."""
     assert rendering in PROMPT_RENDERINGS, f"unknown rendering {rendering!r}"
     periods = tuple(periods)
     assert periods and all(p in ("pre", "post") for p in periods)
     ev = record["evidence"]
     assert ev, "record carries no evidence"
+    k = ev["k_per_pair"]
+    if budget_per_pair is not None and not (0 < budget_per_pair <= k):
+        raise ValueError(
+            f"budget_per_pair must satisfy 0 < B <= k={k} (got "
+            f"{budget_per_pair}); the coverage guarantee is only >= k "
+            f"attempts per pair, so only B <= k is EXACT. Pass None for "
+            f"the full, unsubsampled evidence (evaluator-side only).")
     inst = _rebuild_instance(record)
     eff = ev.get("evidence_seed_effective", ev["evidence_seed"])
     horizon = ev.get("horizon", 60)
     max_ep = ev.get("max_episodes", 300)
-    k = ev["k_per_pair"]
     out_ev, realized = {}, {}
     for period in periods:
         mdp = inst.m0 if period == "pre" else inst.m1
         rng = random.Random(f"{eff}|{period}")
         eps, _ = collect_balanced(mdp, k, rng, horizon, max_ep)
-        srng = random.Random(f"{eff}|prompt|{period}|{budget_per_pair}"
-                             f"|{budget_seed}")
-        sub = _subsample_episodes(eps, budget_per_pair, srng)
+        if budget_per_pair is None:
+            sub = eps
+        else:
+            srng = random.Random(f"{eff}|prompt|{period}|{budget_per_pair}"
+                                 f"|{budget_seed}")
+            sub = _subsample_episodes(eps, budget_per_pair, srng)
         text = render_evidence(
             sub, inst.labels,
             f"{eff}|prompt-shuf-{period}|{budget_seed}")[rendering]
@@ -1100,7 +1162,8 @@ if __name__ == "__main__":
     import os
     outdir = os.environ.get("OUT", ".")
     for tag, det in (("deterministic", True), ("stochastic", False)):
-        inst = make_pair(seed=7, condition="silent_break", deterministic=det)
+        inst = make_pair(seed=7, condition="silent_break", deterministic=det,
+                         matched=True)
         ev = paired_evidence(inst, k=5, evidence_seed=0)
         _summarize(inst, ev)
         path = os.path.join(outdir, f"example_{tag}_silent_break.json")

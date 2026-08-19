@@ -357,14 +357,63 @@ def test_v21_prompt_view():
     lab = inst.labels[(u, v)]
     assert f"{u} {lab}: 4 attempts, 0 delivered" in view["evidence"]["post"], \
         "broken pair keeps exactly budget all-drop observations"
-    big = prompt_view(record, rendering="F3_stats", budget_per_pair=10**6)
+    big = prompt_view(record, rendering="F3_stats", budget_per_pair=None)
     assert big["evidence"]["post"] == record["evidence"]["post"]["F3_stats"], \
-        "unbounded budget reproduces the stored rendering"
+        "budget=None reproduces the stored rendering"
+    try:
+        prompt_view(record, rendering="F3_stats", budget_per_pair=5)
+        raise AssertionError("B > k must be rejected")
+    except ValueError:
+        pass
     one = prompt_view(record, rendering="F2_shuffled", periods=("post",),
                       budget_per_pair=4)
     assert "legal_actions_pre" not in one and "pre" not in one["evidence"]
     print("PASS v2.1 prompt_view: no evaluator leak, exact per-pair "
           "budget, stored renderings reproduced at full budget")
+
+
+def test_v211_matched_mode():
+    eligible = 0
+    first = None
+    for seed in range(40):
+        try:
+            d = make_pair(seed, "silent_break", deterministic=True,
+                          matched=True)
+            s = make_pair(seed, "silent_break", deterministic=False,
+                          matched=True)
+            h = make_pair(seed, "hard_removal", deterministic=False,
+                          matched=True)
+        except ValueError:
+            continue
+        eligible += 1
+        first = first or d
+        assert d.start == s.start == h.start, "matched start"
+        assert d.m0.goal == s.m0.goal
+        assert d.change["edge"] == s.change["edge"] == h.change["edge"], \
+            "matched target across modes and break kinds"
+        assert d.change["on_optimal_route"] and s.change["on_optimal_route"]
+        assert d.oracle["post"]["solvable"] and s.oracle["post"]["solvable"]
+        rec = json.loads(json.dumps(pair_to_json(d)))
+        assert rec["params"]["matched"] is True
+        try:
+            di = make_pair(seed, "irrelevant", deterministic=True,
+                           matched=True)
+            si = make_pair(seed, "irrelevant", deterministic=False,
+                           matched=True)
+            assert di.start == si.start
+            assert di.change["edge"] == si.change["edge"], \
+                "matched irrelevant target"
+        except ValueError:
+            pass
+    assert eligible >= 10, f"matched yield too low in 40 seeds ({eligible})"
+    # matched records rebuild and project cleanly
+    ev = paired_evidence(first, k=3, evidence_seed=1)
+    rec = json.loads(json.dumps(pair_to_json(first, ev)))
+    v = prompt_view(rec, "F3_stats", periods=("post",), budget_per_pair=3)
+    assert (v["realized"]["post"]["events"]
+            == 3 * len(rec["evidence"]["counts_post"]))
+    print("PASS v2.1.1 matched mode: shared start/goal/target across "
+          "modes; records rebuild (%d/40 seeds eligible)" % eligible)
 
 
 def test_v21_examples_in_sync():
@@ -375,7 +424,8 @@ def test_v21_examples_in_sync():
         if not os.path.exists(name):
             continue
         rec = json.load(open(name))
-        inst = make_pair(7, "silent_break", deterministic=det)
+        inst = make_pair(7, "silent_break", deterministic=det,
+                         matched=rec["params"].get("matched", False))
         ev = paired_evidence(inst, k=rec["evidence"]["k_per_pair"],
                              evidence_seed=rec["evidence"]["evidence_seed"])
         assert json.loads(json.dumps(pair_to_json(inst, ev))) == rec, \
@@ -402,5 +452,6 @@ if __name__ == "__main__":
     test_v21_obfuscation_pure_relabeling()
     test_v21_score_statuses()
     test_v21_prompt_view()
+    test_v211_matched_mode()
     test_v21_examples_in_sync()
     print("\nALL TESTS PASSED")
