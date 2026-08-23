@@ -1,0 +1,347 @@
+{
+  "pilot": "deterministic",
+  "created_utc": "2026-08-23T12:15:27.526699Z",
+  "env": {
+    "schema_version": "2.1",
+    "frozen_sha": "5318c3e113438c563c5676d58252d84fda22aa49",
+    "git_head": "5318c3e113438c563c5676d58252d84fda22aa49",
+    "pinned_to_freeze": true
+  },
+  "instance": {
+    "graph_seed": 7,
+    "condition": "silent_break",
+    "deterministic": true,
+    "matched": true,
+    "k_per_pair": 5,
+    "evidence_seed": 0,
+    "seeds": {
+      "graph_seed": 7,
+      "change_seed": "7|break|matched|None",
+      "label_seed": "7|labels"
+    }
+  },
+  "model": {
+    "provider": "azure",
+    "model": "gpt-4o",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "rendering": "F2_shuffled",
+    "budget_per_pair": 5
+  },
+  "prompt_safe_payload": {
+    "schema_version": "2.1",
+    "rendering": "F2_shuffled",
+    "periods": [
+      "pre",
+      "post"
+    ],
+    "budget_per_pair": 5,
+    "nodes": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H"
+    ],
+    "start": "E",
+    "goal": "F",
+    "evidence": {
+      "pre": "(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(B, a2, F)\n(B, a1, D)\n(G, a1, A)\n(B, a1, D)\n(B, a1, D)\n(D, a1, A)\n(G, a2, C)\n(D, a1, A)\n(E, a1, C)\n(D, a1, A)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(B, a2, F)\n(H, a2, C)\n(G, a3, H)\n(D, a2, B)\n(E, a1, C)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(E, a1, C)\n(H, a1, B)\n(D, a1, A)\n(C, a1, E)\n(C, a1, E)\n(E, a1, C)\n(G, a1, A)\n(E, a2, A)\n(E, a2, A)\n(G, a3, H)\n(G, a2, C)\n(D, a2, B)\n(B, a1, D)\n(A, a1, D)\n(G, a3, H)\n(H, a1, B)\n(H, a2, C)\n(H, a2, C)\n(B, a2, F)\n(A, a2, G)\n(G, a1, A)\n(A, a1, D)\n(H, a2, C)\n(C, a1, E)\n(E, a1, C)\n(D, a2, B)\n(B, a1, D)\n(D, a2, B)\n(H, a1, B)\n(G, a3, H)\n(G, a2, C)\n(C, a2, D)\n(C, a2, D)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(D, a2, B)\n(B, a2, F)\n(D, a1, A)\n(B, a2, F)\n(G, a1, A)\n(A, a1, D)\n(A, a1, D)\n(H, a1, B)\n(E, a2, A)\n(C, a1, E)\n(A, a1, D)",
+      "post": "(D, a2, D)\n(G, a2, C)\n(D, a2, D)\n(D, a1, A)\n(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(H, a1, B)\n(B, a2, F)\n(B, a1, D)\n(G, a2, C)\n(E, a2, A)\n(G, a3, H)\n(E, a1, C)\n(A, a1, D)\n(B, a1, D)\n(E, a1, C)\n(H, a2, C)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(D, a2, D)\n(G, a3, H)\n(H, a1, B)\n(C, a1, E)\n(D, a1, A)\n(G, a1, A)\n(C, a2, D)\n(D, a1, A)\n(H, a2, C)\n(A, a1, D)\n(E, a2, A)\n(B, a2, F)\n(G, a3, H)\n(A, a2, G)\n(B, a1, D)\n(A, a1, D)\n(C, a2, D)\n(H, a1, B)\n(E, a1, C)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(E, a1, C)\n(B, a2, F)\n(G, a1, A)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(H, a2, C)\n(A, a2, G)\n(A, a1, D)\n(D, a2, D)\n(G, a1, A)\n(B, a1, D)\n(G, a2, C)\n(G, a2, C)\n(E, a2, A)\n(E, a1, C)\n(B, a2, F)\n(C, a1, E)\n(D, a2, D)\n(C, a1, E)\n(A, a1, D)\n(B, a2, F)\n(D, a1, A)\n(C, a1, E)\n(D, a1, A)\n(A, a2, G)\n(G, a2, C)\n(G, a3, H)\n(G, a1, A)\n(B, a1, D)\n(H, a2, C)\n(H, a1, B)"
+    },
+    "realized": {
+      "pre": {
+        "events": 75,
+        "episodes": 14,
+        "chars": 824
+      },
+      "post": {
+        "events": 75,
+        "episodes": 9,
+        "chars": 824
+      }
+    },
+    "legal_actions_pre": {
+      "A": [
+        "a1",
+        "a2"
+      ],
+      "B": [
+        "a1",
+        "a2"
+      ],
+      "C": [
+        "a1",
+        "a2"
+      ],
+      "D": [
+        "a1",
+        "a2"
+      ],
+      "E": [
+        "a1",
+        "a2"
+      ],
+      "G": [
+        "a1",
+        "a2",
+        "a3"
+      ],
+      "H": [
+        "a1",
+        "a2"
+      ]
+    },
+    "legal_actions_post": {
+      "A": [
+        "a1",
+        "a2"
+      ],
+      "B": [
+        "a1",
+        "a2"
+      ],
+      "C": [
+        "a1",
+        "a2"
+      ],
+      "D": [
+        "a1",
+        "a2"
+      ],
+      "E": [
+        "a1",
+        "a2"
+      ],
+      "G": [
+        "a1",
+        "a2",
+        "a3"
+      ],
+      "H": [
+        "a1",
+        "a2"
+      ]
+    }
+  },
+  "probes": {
+    "detection": {
+      "prompt_chars": 2403,
+      "prompt_tokens_est": 600,
+      "queried_pairs": null,
+      "prompt_text": "You are analysing a courier network. Nodes are locations; at each\nnode you may attempt the listed actions (aK). An attempt either delivers\nyou to that action's destination or you stay and retry (each attempt\ncosts 1). You observed the network in two periods.\n\nNodes: A, B, C, D, E, F, G, H\nStart: E   Goal: F\n\nAction menu, period A (earlier): A: a1, a2; B: a1, a2; C: a1, a2; D: a1, a2; E: a1, a2; G: a1, a2, a3; H: a1, a2\nAction menu, period B (later): A: a1, a2; B: a1, a2; C: a1, a2; D: a1, a2; E: a1, a2; G: a1, a2, a3; H: a1, a2\n\nObservations, period A:\n(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(B, a2, F)\n(B, a1, D)\n(G, a1, A)\n(B, a1, D)\n(B, a1, D)\n(D, a1, A)\n(G, a2, C)\n(D, a1, A)\n(E, a1, C)\n(D, a1, A)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(B, a2, F)\n(H, a2, C)\n(G, a3, H)\n(D, a2, B)\n(E, a1, C)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(E, a1, C)\n(H, a1, B)\n(D, a1, A)\n(C, a1, E)\n(C, a1, E)\n(E, a1, C)\n(G, a1, A)\n(E, a2, A)\n(E, a2, A)\n(G, a3, H)\n(G, a2, C)\n(D, a2, B)\n(B, a1, D)\n(A, a1, D)\n(G, a3, H)\n(H, a1, B)\n(H, a2, C)\n(H, a2, C)\n(B, a2, F)\n(A, a2, G)\n(G, a1, A)\n(A, a1, D)\n(H, a2, C)\n(C, a1, E)\n(E, a1, C)\n(D, a2, B)\n(B, a1, D)\n(D, a2, B)\n(H, a1, B)\n(G, a3, H)\n(G, a2, C)\n(C, a2, D)\n(C, a2, D)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(D, a2, B)\n(B, a2, F)\n(D, a1, A)\n(B, a2, F)\n(G, a1, A)\n(A, a1, D)\n(A, a1, D)\n(H, a1, B)\n(E, a2, A)\n(C, a1, E)\n(A, a1, D)\n\nObservations, period B:\n(D, a2, D)\n(G, a2, C)\n(D, a2, D)\n(D, a1, A)\n(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(H, a1, B)\n(B, a2, F)\n(B, a1, D)\n(G, a2, C)\n(E, a2, A)\n(G, a3, H)\n(E, a1, C)\n(A, a1, D)\n(B, a1, D)\n(E, a1, C)\n(H, a2, C)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(D, a2, D)\n(G, a3, H)\n(H, a1, B)\n(C, a1, E)\n(D, a1, A)\n(G, a1, A)\n(C, a2, D)\n(D, a1, A)\n(H, a2, C)\n(A, a1, D)\n(E, a2, A)\n(B, a2, F)\n(G, a3, H)\n(A, a2, G)\n(B, a1, D)\n(A, a1, D)\n(C, a2, D)\n(H, a1, B)\n(E, a1, C)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(E, a1, C)\n(B, a2, F)\n(G, a1, A)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(H, a2, C)\n(A, a2, G)\n(A, a1, D)\n(D, a2, D)\n(G, a1, A)\n(B, a1, D)\n(G, a2, C)\n(G, a2, C)\n(E, a2, A)\n(E, a1, C)\n(B, a2, F)\n(C, a1, E)\n(D, a2, D)\n(C, a1, E)\n(A, a1, D)\n(B, a2, F)\n(D, a1, A)\n(C, a1, E)\n(D, a1, A)\n(A, a2, G)\n(G, a2, C)\n(G, a3, H)\n(G, a1, A)\n(B, a1, D)\n(H, a2, C)\n(H, a1, B)\n\nQuestion: did the network's dynamics change between period A and period B?\nAnswer with exactly one JSON object: {\"changed\": true} or {\"changed\": false}. No other text.\n",
+      "raw_response": "```json\n{\"changed\": true}\n```",
+      "provider_usage": {
+        "completion_tokens": 10,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": 0,
+          "audio_tokens": 0,
+          "reasoning_tokens": 0,
+          "rejected_prediction_tokens": 0
+        },
+        "latency_checkpoint": {
+          "engine_tbt_ms": 7,
+          "engine_ttft_ms": 74,
+          "engine_ttlt_ms": 142,
+          "pre_inference_ms": 70,
+          "service_tbt_ms": 7,
+          "service_ttft_ms": 168,
+          "service_ttlt_ms": 231,
+          "total_duration_ms": 168,
+          "user_visible_ttft_ms": 98
+        },
+        "prompt_tokens": 1325,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 0
+        },
+        "total_tokens": 1335
+      },
+      "parsed": {
+        "status": "ok",
+        "changed": true
+      },
+      "scored": {
+        "status": "ok",
+        "truth": true,
+        "predicted": true,
+        "correct": true
+      }
+    },
+    "localization": {
+      "prompt_chars": 2419,
+      "prompt_tokens_est": 604,
+      "queried_pairs": null,
+      "prompt_text": "You are analysing a courier network. Nodes are locations; at each\nnode you may attempt the listed actions (aK). An attempt either delivers\nyou to that action's destination or you stay and retry (each attempt\ncosts 1). You observed the network in two periods.\n\nNodes: A, B, C, D, E, F, G, H\nStart: E   Goal: F\n\nAction menu, period A (earlier): A: a1, a2; B: a1, a2; C: a1, a2; D: a1, a2; E: a1, a2; G: a1, a2, a3; H: a1, a2\nAction menu, period B (later): A: a1, a2; B: a1, a2; C: a1, a2; D: a1, a2; E: a1, a2; G: a1, a2, a3; H: a1, a2\n\nObservations, period A:\n(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(B, a2, F)\n(B, a1, D)\n(G, a1, A)\n(B, a1, D)\n(B, a1, D)\n(D, a1, A)\n(G, a2, C)\n(D, a1, A)\n(E, a1, C)\n(D, a1, A)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(B, a2, F)\n(H, a2, C)\n(G, a3, H)\n(D, a2, B)\n(E, a1, C)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(E, a1, C)\n(H, a1, B)\n(D, a1, A)\n(C, a1, E)\n(C, a1, E)\n(E, a1, C)\n(G, a1, A)\n(E, a2, A)\n(E, a2, A)\n(G, a3, H)\n(G, a2, C)\n(D, a2, B)\n(B, a1, D)\n(A, a1, D)\n(G, a3, H)\n(H, a1, B)\n(H, a2, C)\n(H, a2, C)\n(B, a2, F)\n(A, a2, G)\n(G, a1, A)\n(A, a1, D)\n(H, a2, C)\n(C, a1, E)\n(E, a1, C)\n(D, a2, B)\n(B, a1, D)\n(D, a2, B)\n(H, a1, B)\n(G, a3, H)\n(G, a2, C)\n(C, a2, D)\n(C, a2, D)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(D, a2, B)\n(B, a2, F)\n(D, a1, A)\n(B, a2, F)\n(G, a1, A)\n(A, a1, D)\n(A, a1, D)\n(H, a1, B)\n(E, a2, A)\n(C, a1, E)\n(A, a1, D)\n\nObservations, period B:\n(D, a2, D)\n(G, a2, C)\n(D, a2, D)\n(D, a1, A)\n(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(H, a1, B)\n(B, a2, F)\n(B, a1, D)\n(G, a2, C)\n(E, a2, A)\n(G, a3, H)\n(E, a1, C)\n(A, a1, D)\n(B, a1, D)\n(E, a1, C)\n(H, a2, C)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(D, a2, D)\n(G, a3, H)\n(H, a1, B)\n(C, a1, E)\n(D, a1, A)\n(G, a1, A)\n(C, a2, D)\n(D, a1, A)\n(H, a2, C)\n(A, a1, D)\n(E, a2, A)\n(B, a2, F)\n(G, a3, H)\n(A, a2, G)\n(B, a1, D)\n(A, a1, D)\n(C, a2, D)\n(H, a1, B)\n(E, a1, C)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(E, a1, C)\n(B, a2, F)\n(G, a1, A)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(H, a2, C)\n(A, a2, G)\n(A, a1, D)\n(D, a2, D)\n(G, a1, A)\n(B, a1, D)\n(G, a2, C)\n(G, a2, C)\n(E, a2, A)\n(E, a1, C)\n(B, a2, F)\n(C, a1, E)\n(D, a2, D)\n(C, a1, E)\n(A, a1, D)\n(B, a2, F)\n(D, a1, A)\n(C, a1, E)\n(D, a1, A)\n(A, a2, G)\n(G, a2, C)\n(G, a3, H)\n(G, a1, A)\n(B, a1, D)\n(H, a2, C)\n(H, a1, B)\n\nThe dynamics changed between the periods. Question: which single (node, action) pair changed?\nAnswer with exactly one JSON object: {\"node\": \"<node>\", \"action\": \"<aK>\"}. No other text.\n",
+      "raw_response": "```json\n{\"node\": \"D\", \"action\": \"a2\"}\n```",
+      "provider_usage": {
+        "completion_tokens": 18,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": 0,
+          "audio_tokens": 0,
+          "reasoning_tokens": 0,
+          "rejected_prediction_tokens": 0
+        },
+        "latency_checkpoint": {
+          "engine_tbt_ms": 7,
+          "engine_ttft_ms": 89,
+          "engine_ttlt_ms": 217,
+          "pre_inference_ms": 135,
+          "service_tbt_ms": 9,
+          "service_ttft_ms": 262,
+          "service_ttlt_ms": 403,
+          "total_duration_ms": 281,
+          "user_visible_ttft_ms": 127
+        },
+        "prompt_tokens": 1332,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 1280
+        },
+        "total_tokens": 1350
+      },
+      "parsed": {
+        "status": "ok",
+        "node": "D",
+        "action": "a2"
+      },
+      "scored": {
+        "status": "ok",
+        "applicable": true,
+        "correct": true,
+        "truth": {
+          "node": "D",
+          "action": "a2"
+        }
+      }
+    },
+    "preservation": {
+      "prompt_chars": 2609,
+      "prompt_tokens_est": 652,
+      "queried_pairs": [
+        {
+          "node": "H",
+          "action": "a2"
+        },
+        {
+          "node": "D",
+          "action": "a2"
+        },
+        {
+          "node": "D",
+          "action": "a1"
+        },
+        {
+          "node": "C",
+          "action": "a1"
+        }
+      ],
+      "prompt_text": "You are analysing a courier network. Nodes are locations; at each\nnode you may attempt the listed actions (aK). An attempt either delivers\nyou to that action's destination or you stay and retry (each attempt\ncosts 1). You observed the network in two periods.\n\nNodes: A, B, C, D, E, F, G, H\nStart: E   Goal: F\n\nAction menu, period A (earlier): A: a1, a2; B: a1, a2; C: a1, a2; D: a1, a2; E: a1, a2; G: a1, a2, a3; H: a1, a2\nAction menu, period B (later): A: a1, a2; B: a1, a2; C: a1, a2; D: a1, a2; E: a1, a2; G: a1, a2, a3; H: a1, a2\n\nObservations, period A:\n(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(B, a2, F)\n(B, a1, D)\n(G, a1, A)\n(B, a1, D)\n(B, a1, D)\n(D, a1, A)\n(G, a2, C)\n(D, a1, A)\n(E, a1, C)\n(D, a1, A)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(B, a2, F)\n(H, a2, C)\n(G, a3, H)\n(D, a2, B)\n(E, a1, C)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(E, a1, C)\n(H, a1, B)\n(D, a1, A)\n(C, a1, E)\n(C, a1, E)\n(E, a1, C)\n(G, a1, A)\n(E, a2, A)\n(E, a2, A)\n(G, a3, H)\n(G, a2, C)\n(D, a2, B)\n(B, a1, D)\n(A, a1, D)\n(G, a3, H)\n(H, a1, B)\n(H, a2, C)\n(H, a2, C)\n(B, a2, F)\n(A, a2, G)\n(G, a1, A)\n(A, a1, D)\n(H, a2, C)\n(C, a1, E)\n(E, a1, C)\n(D, a2, B)\n(B, a1, D)\n(D, a2, B)\n(H, a1, B)\n(G, a3, H)\n(G, a2, C)\n(C, a2, D)\n(C, a2, D)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(D, a2, B)\n(B, a2, F)\n(D, a1, A)\n(B, a2, F)\n(G, a1, A)\n(A, a1, D)\n(A, a1, D)\n(H, a1, B)\n(E, a2, A)\n(C, a1, E)\n(A, a1, D)\n\nObservations, period B:\n(D, a2, D)\n(G, a2, C)\n(D, a2, D)\n(D, a1, A)\n(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(H, a1, B)\n(B, a2, F)\n(B, a1, D)\n(G, a2, C)\n(E, a2, A)\n(G, a3, H)\n(E, a1, C)\n(A, a1, D)\n(B, a1, D)\n(E, a1, C)\n(H, a2, C)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(D, a2, D)\n(G, a3, H)\n(H, a1, B)\n(C, a1, E)\n(D, a1, A)\n(G, a1, A)\n(C, a2, D)\n(D, a1, A)\n(H, a2, C)\n(A, a1, D)\n(E, a2, A)\n(B, a2, F)\n(G, a3, H)\n(A, a2, G)\n(B, a1, D)\n(A, a1, D)\n(C, a2, D)\n(H, a1, B)\n(E, a1, C)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(E, a1, C)\n(B, a2, F)\n(G, a1, A)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(H, a2, C)\n(A, a2, G)\n(A, a1, D)\n(D, a2, D)\n(G, a1, A)\n(B, a1, D)\n(G, a2, C)\n(G, a2, C)\n(E, a2, A)\n(E, a1, C)\n(B, a2, F)\n(C, a1, E)\n(D, a2, D)\n(C, a1, E)\n(A, a1, D)\n(B, a2, F)\n(D, a1, A)\n(C, a1, E)\n(D, a1, A)\n(A, a2, G)\n(G, a2, C)\n(G, a3, H)\n(G, a1, A)\n(B, a1, D)\n(H, a2, C)\n(H, a1, B)\n\nFor EACH of the following (node, action) pairs, judge whether its dynamics changed between period A and period B:\n- node H, action a2\n- node D, action a2\n- node D, action a1\n- node C, action a1\nAnswer with exactly one JSON object of the form {\"pairs\": [{\"node\": \"...\", \"action\": \"...\", \"changed\": true|false}, ...]} containing every listed pair exactly once. No other text.\n",
+      "raw_response": "```json\n{\"pairs\": [{\"node\": \"H\", \"action\": \"a2\", \"changed\": false}, {\"node\": \"D\", \"action\": \"a2\", \"changed\": true}, {\"node\": \"D\", \"action\": \"a1\", \"changed\": false}, {\"node\": \"C\", \"action\": \"a1\", \"changed\": false}]}\n```",
+      "provider_usage": {
+        "completion_tokens": 81,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": 0,
+          "audio_tokens": 0,
+          "reasoning_tokens": 0,
+          "rejected_prediction_tokens": 0
+        },
+        "latency_checkpoint": {
+          "engine_tbt_ms": 5,
+          "engine_ttft_ms": 48,
+          "engine_ttlt_ms": 426,
+          "pre_inference_ms": 96,
+          "service_tbt_ms": 5,
+          "service_ttft_ms": 172,
+          "service_ttlt_ms": 547,
+          "total_duration_ms": 456,
+          "user_visible_ttft_ms": 76
+        },
+        "prompt_tokens": 1386,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 1280
+        },
+        "total_tokens": 1467
+      },
+      "parsed": {
+        "status": "ok",
+        "pairs": [
+          {
+            "node": "H",
+            "action": "a2",
+            "changed": false
+          },
+          {
+            "node": "D",
+            "action": "a2",
+            "changed": true
+          },
+          {
+            "node": "D",
+            "action": "a1",
+            "changed": false
+          },
+          {
+            "node": "C",
+            "action": "a1",
+            "changed": false
+          }
+        ]
+      },
+      "scored": {
+        "status": "ok",
+        "n_queried": 4,
+        "n_scored": 4,
+        "accuracy": 1.0
+      }
+    },
+    "adaptation": {
+      "prompt_chars": 2552,
+      "prompt_tokens_est": 638,
+      "queried_pairs": null,
+      "prompt_text": "You are analysing a courier network. Nodes are locations; at each\nnode you may attempt the listed actions (aK). An attempt either delivers\nyou to that action's destination or you stay and retry (each attempt\ncosts 1). You observed the network in two periods.\n\nNodes: A, B, C, D, E, F, G, H\nStart: E   Goal: F\n\nAction menu, period A (earlier): A: a1, a2; B: a1, a2; C: a1, a2; D: a1, a2; E: a1, a2; G: a1, a2, a3; H: a1, a2\nAction menu, period B (later): A: a1, a2; B: a1, a2; C: a1, a2; D: a1, a2; E: a1, a2; G: a1, a2, a3; H: a1, a2\n\nObservations, period A:\n(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(B, a2, F)\n(B, a1, D)\n(G, a1, A)\n(B, a1, D)\n(B, a1, D)\n(D, a1, A)\n(G, a2, C)\n(D, a1, A)\n(E, a1, C)\n(D, a1, A)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(B, a2, F)\n(H, a2, C)\n(G, a3, H)\n(D, a2, B)\n(E, a1, C)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(E, a1, C)\n(H, a1, B)\n(D, a1, A)\n(C, a1, E)\n(C, a1, E)\n(E, a1, C)\n(G, a1, A)\n(E, a2, A)\n(E, a2, A)\n(G, a3, H)\n(G, a2, C)\n(D, a2, B)\n(B, a1, D)\n(A, a1, D)\n(G, a3, H)\n(H, a1, B)\n(H, a2, C)\n(H, a2, C)\n(B, a2, F)\n(A, a2, G)\n(G, a1, A)\n(A, a1, D)\n(H, a2, C)\n(C, a1, E)\n(E, a1, C)\n(D, a2, B)\n(B, a1, D)\n(D, a2, B)\n(H, a1, B)\n(G, a3, H)\n(G, a2, C)\n(C, a2, D)\n(C, a2, D)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(G, a2, C)\n(A, a2, G)\n(D, a2, B)\n(B, a2, F)\n(D, a1, A)\n(B, a2, F)\n(G, a1, A)\n(A, a1, D)\n(A, a1, D)\n(H, a1, B)\n(E, a2, A)\n(C, a1, E)\n(A, a1, D)\n\nObservations, period B:\n(D, a2, D)\n(G, a2, C)\n(D, a2, D)\n(D, a1, A)\n(A, a2, G)\n(H, a1, B)\n(C, a2, D)\n(H, a1, B)\n(B, a2, F)\n(B, a1, D)\n(G, a2, C)\n(E, a2, A)\n(G, a3, H)\n(E, a1, C)\n(A, a1, D)\n(B, a1, D)\n(E, a1, C)\n(H, a2, C)\n(C, a1, E)\n(C, a2, D)\n(E, a2, A)\n(D, a2, D)\n(G, a3, H)\n(H, a1, B)\n(C, a1, E)\n(D, a1, A)\n(G, a1, A)\n(C, a2, D)\n(D, a1, A)\n(H, a2, C)\n(A, a1, D)\n(E, a2, A)\n(B, a2, F)\n(G, a3, H)\n(A, a2, G)\n(B, a1, D)\n(A, a1, D)\n(C, a2, D)\n(H, a1, B)\n(E, a1, C)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(E, a1, C)\n(B, a2, F)\n(G, a1, A)\n(G, a3, H)\n(G, a1, A)\n(H, a2, C)\n(H, a2, C)\n(A, a2, G)\n(A, a1, D)\n(D, a2, D)\n(G, a1, A)\n(B, a1, D)\n(G, a2, C)\n(G, a2, C)\n(E, a2, A)\n(E, a1, C)\n(B, a2, F)\n(C, a1, E)\n(D, a2, D)\n(C, a1, E)\n(A, a1, D)\n(B, a2, F)\n(D, a1, A)\n(C, a1, E)\n(D, a1, A)\n(A, a2, G)\n(G, a2, C)\n(G, a3, H)\n(G, a1, A)\n(B, a1, D)\n(H, a2, C)\n(H, a1, B)\n\nPlan a route for period B (the later network) from E to F. Answer with exactly one JSON object of the form {\"route\": [{\"node\": \"...\", \"action\": \"...\"}, ...]}: at most 32 steps, the first step's node must be E, each next step's node must be where the previous action leads, and the route must end at F. No other text.\n",
+      "raw_response": "```json\n{\"route\": [{\"node\": \"E\", \"action\": \"a1\"}, {\"node\": \"C\", \"action\": \"a2\"}, {\"node\": \"D\", \"action\": \"a2\"}, {\"node\": \"B\", \"action\": \"a2\"}, {\"node\": \"F\", \"action\": null}]}\n```",
+      "provider_usage": {
+        "completion_tokens": 72,
+        "completion_tokens_details": {
+          "accepted_prediction_tokens": 0,
+          "audio_tokens": 0,
+          "reasoning_tokens": 0,
+          "rejected_prediction_tokens": 0
+        },
+        "latency_checkpoint": {
+          "engine_tbt_ms": 6,
+          "engine_ttft_ms": 42,
+          "engine_ttlt_ms": 441,
+          "pre_inference_ms": 77,
+          "service_tbt_ms": 6,
+          "service_ttft_ms": 143,
+          "service_ttlt_ms": 538,
+          "total_duration_ms": 466,
+          "user_visible_ttft_ms": 66
+        },
+        "prompt_tokens": 1370,
+        "prompt_tokens_details": {
+          "audio_tokens": 0,
+          "cached_tokens": 1280
+        },
+        "total_tokens": 1442
+      },
+      "parsed": {
+        "status": "invalid_object"
+      },
+      "scored": {
+        "status": "invalid_object",
+        "path": null,
+        "expected_cost": null,
+        "optimal_cost": 5.0,
+        "regret": null,
+        "is_optimal": false
+      }
+    }
+  }
+}

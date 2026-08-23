@@ -1,0 +1,447 @@
+{
+  "mode": "det",
+  "frozen_sha": "5318c3e113438c563c5676d58252d84fda22aa49",
+  "note": "EVALUATOR ONLY: never paste into a model.",
+  "change": {
+    "edge": {
+      "from": "D",
+      "to": "B"
+    },
+    "action": "a2",
+    "old_p": 1.0,
+    "new_p": 0.0,
+    "mode": "silent",
+    "on_optimal_route": true,
+    "route_position": 2
+  },
+  "true_p": {
+    "pre": {
+      "A a1": 1.0,
+      "A a2": 1.0,
+      "B a1": 1.0,
+      "B a2": 1.0,
+      "C a1": 1.0,
+      "C a2": 1.0,
+      "D a1": 1.0,
+      "D a2": 1.0,
+      "E a1": 1.0,
+      "E a2": 1.0,
+      "G a1": 1.0,
+      "G a2": 1.0,
+      "G a3": 1.0,
+      "H a1": 1.0,
+      "H a2": 1.0
+    },
+    "post": {
+      "A a1": 1.0,
+      "A a2": 1.0,
+      "B a1": 1.0,
+      "B a2": 1.0,
+      "C a1": 1.0,
+      "C a2": 1.0,
+      "D a1": 1.0,
+      "D a2": 0.0,
+      "E a1": 1.0,
+      "E a2": 1.0,
+      "G a1": 1.0,
+      "G a2": 1.0,
+      "G a3": 1.0,
+      "H a1": 1.0,
+      "H a2": 1.0
+    }
+  },
+  "empirical_prompt_visible": {
+    "pre": {
+      "A a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "A a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "B a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "B a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "C a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "C a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "D a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "D a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "E a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "E a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "G a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "G a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "G a3": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "H a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "H a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      }
+    },
+    "post": {
+      "A a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "A a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "B a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "B a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "C a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "C a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "D a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "D a2": {
+        "successes": 0,
+        "attempts": 5,
+        "rate": 0.0
+      },
+      "E a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "E a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "G a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "G a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "G a3": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "H a1": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      },
+      "H a2": {
+        "successes": 5,
+        "attempts": 5,
+        "rate": 1.0
+      }
+    }
+  },
+  "empirical_full_collection": {
+    "pre": {
+      "A a1": {
+        "attempts": 15,
+        "delivered": 15,
+        "rate": 1.0
+      },
+      "A a2": {
+        "attempts": 14,
+        "delivered": 14,
+        "rate": 1.0
+      },
+      "B a1": {
+        "attempts": 14,
+        "delivered": 14,
+        "rate": 1.0
+      },
+      "B a2": {
+        "attempts": 14,
+        "delivered": 14,
+        "rate": 1.0
+      },
+      "C a1": {
+        "attempts": 9,
+        "delivered": 9,
+        "rate": 1.0
+      },
+      "C a2": {
+        "attempts": 9,
+        "delivered": 9,
+        "rate": 1.0
+      },
+      "D a1": {
+        "attempts": 19,
+        "delivered": 19,
+        "rate": 1.0
+      },
+      "D a2": {
+        "attempts": 19,
+        "delivered": 19,
+        "rate": 1.0
+      },
+      "E a1": {
+        "attempts": 5,
+        "delivered": 5,
+        "rate": 1.0
+      },
+      "E a2": {
+        "attempts": 5,
+        "delivered": 5,
+        "rate": 1.0
+      },
+      "G a1": {
+        "attempts": 5,
+        "delivered": 5,
+        "rate": 1.0
+      },
+      "G a2": {
+        "attempts": 5,
+        "delivered": 5,
+        "rate": 1.0
+      },
+      "G a3": {
+        "attempts": 6,
+        "delivered": 6,
+        "rate": 1.0
+      },
+      "H a1": {
+        "attempts": 5,
+        "delivered": 5,
+        "rate": 1.0
+      },
+      "H a2": {
+        "attempts": 5,
+        "delivered": 5,
+        "rate": 1.0
+      }
+    },
+    "post": {
+      "A a1": {
+        "attempts": 42,
+        "delivered": 42,
+        "rate": 1.0
+      },
+      "A a2": {
+        "attempts": 42,
+        "delivered": 42,
+        "rate": 1.0
+      },
+      "B a1": {
+        "attempts": 5,
+        "delivered": 5,
+        "rate": 1.0
+      },
+      "B a2": {
+        "attempts": 5,
+        "delivered": 5,
+        "rate": 1.0
+      },
+      "C a1": {
+        "attempts": 15,
+        "delivered": 15,
+        "rate": 1.0
+      },
+      "C a2": {
+        "attempts": 14,
+        "delivered": 14,
+        "rate": 1.0
+      },
+      "D a1": {
+        "attempts": 62,
+        "delivered": 62,
+        "rate": 1.0
+      },
+      "D a2": {
+        "attempts": 61,
+        "delivered": 0,
+        "rate": 0.0
+      },
+      "E a1": {
+        "attempts": 8,
+        "delivered": 8,
+        "rate": 1.0
+      },
+      "E a2": {
+        "attempts": 8,
+        "delivered": 8,
+        "rate": 1.0
+      },
+      "G a1": {
+        "attempts": 14,
+        "delivered": 14,
+        "rate": 1.0
+      },
+      "G a2": {
+        "attempts": 14,
+        "delivered": 14,
+        "rate": 1.0
+      },
+      "G a3": {
+        "attempts": 15,
+        "delivered": 15,
+        "rate": 1.0
+      },
+      "H a1": {
+        "attempts": 8,
+        "delivered": 8,
+        "rate": 1.0
+      },
+      "H a2": {
+        "attempts": 7,
+        "delivered": 7,
+        "rate": 1.0
+      }
+    }
+  },
+  "oracle": {
+    "start": "E",
+    "goal": "F",
+    "pre": {
+      "solvable": true,
+      "optimal_route": [
+        "E",
+        "A",
+        "D",
+        "B",
+        "F"
+      ],
+      "optimal_actions": [
+        "a2",
+        "a1",
+        "a2",
+        "a2"
+      ],
+      "optimal_cost": 4.0,
+      "route_unique": false,
+      "tie_nodes_on_route": [
+        "E"
+      ],
+      "alternative_route": [
+        "E",
+        "C",
+        "D",
+        "B",
+        "F"
+      ],
+      "alternative_actions": [
+        "a1",
+        "a2",
+        "a2",
+        "a2"
+      ],
+      "alternative_cost": 4.0
+    },
+    "post": {
+      "solvable": true,
+      "optimal_route": [
+        "E",
+        "A",
+        "G",
+        "H",
+        "B",
+        "F"
+      ],
+      "optimal_actions": [
+        "a2",
+        "a2",
+        "a3",
+        "a1",
+        "a2"
+      ],
+      "optimal_cost": 5.0,
+      "route_unique": true,
+      "tie_nodes_on_route": [],
+      "alternative_route": [
+        "E",
+        "C",
+        "D",
+        "A",
+        "G",
+        "H",
+        "B",
+        "F"
+      ],
+      "alternative_actions": [
+        "a1",
+        "a2",
+        "a1",
+        "a2",
+        "a3",
+        "a1",
+        "a2"
+      ],
+      "alternative_cost": 7.0
+    },
+    "route_changed": true,
+    "cost_delta": 1.0
+  }
+}

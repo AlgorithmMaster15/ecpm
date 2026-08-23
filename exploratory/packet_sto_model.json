@@ -1,0 +1,121 @@
+{
+  "schema_version": "2.1",
+  "mode": "sto",
+  "note": "Prompt-safe: this file may be pasted to a model.",
+  "pairs": [
+    "A a1",
+    "A a2",
+    "B a1",
+    "B a2",
+    "C a1",
+    "C a2",
+    "D a1",
+    "D a2",
+    "E a1",
+    "E a2",
+    "G a1",
+    "G a2",
+    "G a3",
+    "H a1",
+    "H a2"
+  ],
+  "view": {
+    "schema_version": "2.1",
+    "rendering": "F2_shuffled",
+    "periods": [
+      "pre",
+      "post"
+    ],
+    "budget_per_pair": 5,
+    "nodes": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H"
+    ],
+    "start": "E",
+    "goal": "F",
+    "evidence": {
+      "pre": "(A, a2, A)\n(E, a1, C)\n(G, a3, H)\n(E, a1, C)\n(E, a2, A)\n(G, a1, A)\n(G, a1, A)\n(C, a1, E)\n(C, a2, D)\n(G, a3, H)\n(B, a2, B)\n(D, a1, D)\n(H, a2, H)\n(D, a2, D)\n(E, a1, E)\n(C, a1, E)\n(D, a1, A)\n(G, a3, G)\n(B, a2, F)\n(C, a2, C)\n(G, a2, C)\n(A, a1, A)\n(C, a1, E)\n(A, a1, D)\n(E, a2, A)\n(G, a2, C)\n(B, a2, F)\n(C, a2, D)\n(D, a2, B)\n(D, a1, D)\n(A, a2, G)\n(E, a2, A)\n(C, a2, D)\n(B, a1, D)\n(D, a1, A)\n(G, a2, C)\n(A, a1, D)\n(G, a2, C)\n(G, a2, C)\n(D, a2, D)\n(B, a1, B)\n(C, a1, E)\n(A, a2, G)\n(D, a2, D)\n(A, a1, D)\n(G, a3, H)\n(H, a1, B)\n(E, a1, E)\n(B, a1, D)\n(H, a1, H)\n(H, a1, B)\n(A, a2, A)\n(C, a1, C)\n(G, a1, A)\n(A, a2, G)\n(B, a2, B)\n(H, a2, H)\n(G, a1, A)\n(E, a1, E)\n(H, a1, B)\n(G, a1, A)\n(D, a1, A)\n(B, a1, B)\n(B, a1, B)\n(H, a2, C)\n(H, a2, C)\n(B, a2, F)\n(C, a2, D)\n(G, a3, H)\n(E, a2, E)\n(A, a1, A)\n(E, a2, A)\n(H, a2, H)\n(D, a2, D)\n(H, a1, H)",
+      "post": "(A, a1, D)\n(H, a2, H)\n(C, a2, D)\n(C, a2, D)\n(C, a2, D)\n(H, a2, H)\n(A, a2, G)\n(G, a3, H)\n(D, a1, A)\n(B, a1, D)\n(G, a2, C)\n(B, a1, D)\n(G, a3, H)\n(C, a1, E)\n(G, a1, A)\n(H, a1, B)\n(B, a2, F)\n(G, a2, G)\n(C, a2, D)\n(B, a2, B)\n(G, a1, A)\n(B, a1, D)\n(B, a2, B)\n(B, a2, F)\n(H, a1, B)\n(E, a1, C)\n(E, a1, C)\n(D, a2, D)\n(A, a2, G)\n(D, a2, D)\n(E, a2, E)\n(A, a2, G)\n(H, a1, H)\n(E, a1, C)\n(A, a1, D)\n(H, a1, B)\n(C, a2, C)\n(D, a1, A)\n(C, a1, E)\n(G, a1, A)\n(G, a1, A)\n(C, a1, E)\n(A, a1, D)\n(D, a1, A)\n(E, a2, A)\n(G, a3, H)\n(D, a2, D)\n(G, a3, H)\n(A, a1, D)\n(B, a1, D)\n(G, a1, A)\n(G, a2, G)\n(H, a2, C)\n(C, a1, E)\n(A, a2, G)\n(H, a2, H)\n(G, a2, C)\n(E, a2, E)\n(D, a1, A)\n(D, a2, D)\n(E, a1, C)\n(G, a2, C)\n(C, a1, E)\n(D, a1, A)\n(H, a1, B)\n(A, a1, A)\n(A, a2, A)\n(E, a2, E)\n(E, a2, A)\n(D, a2, D)\n(G, a3, H)\n(B, a2, F)\n(E, a1, C)\n(B, a1, D)\n(H, a2, H)"
+    },
+    "realized": {
+      "pre": {
+        "events": 75,
+        "episodes": 7,
+        "chars": 824
+      },
+      "post": {
+        "events": 75,
+        "episodes": 7,
+        "chars": 824
+      }
+    },
+    "legal_actions_pre": {
+      "A": [
+        "a1",
+        "a2"
+      ],
+      "B": [
+        "a1",
+        "a2"
+      ],
+      "C": [
+        "a1",
+        "a2"
+      ],
+      "D": [
+        "a1",
+        "a2"
+      ],
+      "E": [
+        "a1",
+        "a2"
+      ],
+      "G": [
+        "a1",
+        "a2",
+        "a3"
+      ],
+      "H": [
+        "a1",
+        "a2"
+      ]
+    },
+    "legal_actions_post": {
+      "A": [
+        "a1",
+        "a2"
+      ],
+      "B": [
+        "a1",
+        "a2"
+      ],
+      "C": [
+        "a1",
+        "a2"
+      ],
+      "D": [
+        "a1",
+        "a2"
+      ],
+      "E": [
+        "a1",
+        "a2"
+      ],
+      "G": [
+        "a1",
+        "a2",
+        "a3"
+      ],
+      "H": [
+        "a1",
+        "a2"
+      ]
+    }
+  }
+}
