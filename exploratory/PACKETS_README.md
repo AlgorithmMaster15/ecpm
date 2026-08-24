@@ -42,12 +42,14 @@ Section 7 grader (status, expected cost, regret).
 ## Calibration anchors (from self-test, stochastic instance)
 
 - A response that reproduces the prompt-visible rates exactly:
-  MAE 0.167 vs truth, elicited localization B a1 (wrong).
-- A response with the true probabilities: MAE 0.167 vs the visible
+  MAE vs truth 0.171 pre, 0.167 post, 0.169 overall; elicited
+  localization is a tie between B a1 and E a1, both wrong (the scorer
+  reports the full tied set).
+- A response with the true probabilities: MAE 0.169 vs the visible
   rates, localization D a2 (correct), route regret 0.
 Read model numbers against these two anchors: at k = 5, perfect
-evidence reading and truth sit 0.167 apart, and perfect reading still
-localizes to a noise pair.
+evidence reading and truth sit about 0.17 apart, and perfect reading
+still localizes to noise pairs.
 
 ## Provenance
 
