@@ -117,11 +117,14 @@ def main():
             "visible": [vr["pre"][ch], vr["post"][ch]],
             "model": list(est[ch]) if ch in est else None,
         }
-        gap_pair = max(est, key=lambda k: abs(est[k][1] - est[k][0]))
+        gaps = {k: abs(v[1] - v[0]) for k, v in est.items()}
+        top = max(gaps.values())
+        tied = sorted(k for k, g in gaps.items() if abs(g - top) < 1e-9)
         report["elicited_localization"] = {
-            "argmax_gap_pair": f"{gap_pair[0]} {gap_pair[1]}",
-            "gap": round(abs(est[gap_pair][1] - est[gap_pair][0]), 4),
-            "matches_true_change": gap_pair == ch,
+            "argmax_gap_pairs": [f"{n} {a}" for n, a in tied],
+            "gap": round(top, 4),
+            "matches_true_change": ch in tied,
+            "tie": len(tied) > 1,
         }
 
     # ---- route half: frozen grader ------------------------------------
