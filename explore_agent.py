@@ -57,7 +57,7 @@ class LiveStep:
 @dataclass
 class EpisodeOutcome:
     """Summary of one exploration episode: its full step log, plus whether
-    it reached the goal."""
+    it reached the goal. An episode is a complete attempt to get from the start to the goal."""
     episode_idx: int          # which episode (0-based)
     phase: str                # "m0" | "m1"
     steps: list = field(default_factory=list)   # all LiveSteps in this episode
@@ -72,7 +72,6 @@ class ExploreConfig:
     max_episodes_m1: int = 4            # episodes on the post-change world (always runs all of them)
     max_steps_per_episode: int = 25     # step limit per episode
     max_retries_per_step: int = 2       # retries for a bad action before giving up
-    max_consecutive_giveups: int = 2    # give-ups in a row that flag an episode as stuck
     announce_change: bool = False       # tell the model the world may have changed (ablation)
     max_context_tokens_est: int = 12000  # trim old turns once the transcript gets this big
     keep_last_n_turns_min: int = 6      # never trim below this many recent turns
