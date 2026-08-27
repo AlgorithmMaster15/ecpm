@@ -13,9 +13,11 @@ Design notes:
     node, chosen, success, next_node), so it can be passed unmodified
     into resource_mdp's scoring primitives (used by explore_metrics.py).
   * No network I/O here. `run_explore_instance` takes either a real
-    (retrying) `act_fn(system_prompt, messages) -> raw_text` or a
-    network-free `dry_run_policy(...)`-built node policy, so the whole
-    loop is unit-testable without an API key.
+    (retrying) `act_fn(system_prompt, messages) -> (raw_text, reasoning)`
+    or a network-free `dry_run_policy(...)`-built node policy, so the
+    whole loop is unit-testable without an API key. `reasoning` is a
+    separate string for providers with a distinct reasoning channel
+    (e.g. Claude Extended Thinking); pass "" when there is none.
 
 Stdlib only. Python 3.8+.
 """
@@ -52,6 +54,7 @@ class LiveStep:
     parse_status: str       # ok | malformed_json | invalid_object | illegal_action | giving_up
     retries: int              # correction attempts before this action was accepted
     raw_text: str             # model's full reply for this step
+    reasoning: str = ""      # model's reasoning for this step, kept separate from raw_text (empty for dry-run and for providers without a separate reasoning channel)
 
 
 @dataclass
@@ -292,8 +295,8 @@ def _build_recording_policy(mdp, labels, cfg, messages, step_meta, *,
         messages: Shared, growing user/assistant transcript (mutated).
         step_meta: Shared list to append one metadata dict per step to
             (mutated); zipped with rollout()'s Attempt list afterward.
-        act_fn: LLM call function (system, messages) -> raw_text.
-            Give exactly one of act_fn or node_policy.
+        act_fn: LLM call function (system, messages) -> (raw_text,
+            reasoning). Give exactly one of act_fn or node_policy.
         system_prompt: System prompt to pass to act_fn (required if
             act_fn is given).
         node_policy: A plain policy(u, rng) -> node (e.g. from
@@ -335,6 +338,7 @@ def _build_recording_policy(mdp, labels, cfg, messages, step_meta, *,
             v = node_policy(u, rng)
             action_label = labels.get((u, v))
             raw = json.dumps({"action": action_label})
+            reasoning = ""
             status, retries = "ok", 0
         else:
             # live-model path: ask, parse, and retry on a bad reply up to max_retries_per_step times
@@ -342,9 +346,9 @@ def _build_recording_policy(mdp, labels, cfg, messages, step_meta, *,
                                    cfg.keep_last_n_turns_min)
             retries = 0
             parsed = {"status": "malformed_json"}
-            raw = ""
+            raw, reasoning = "", ""
             while True:
-                raw = act_fn(system_prompt, trimmed)
+                raw, reasoning = act_fn(system_prompt, trimmed)
                 parsed = parse_step_action(raw, menu)
                 if parsed["status"] == "ok" or retries >= cfg.max_retries_per_step:
                     break
@@ -368,7 +372,7 @@ def _build_recording_policy(mdp, labels, cfg, messages, step_meta, *,
         messages.append({"role": "assistant", "content": raw})   # log the model's reply
         step_meta.append({"action_label": action_label,
                           "parse_status": status, "retries": retries,
-                          "raw_text": raw})
+                          "raw_text": raw, "reasoning": reasoning})
         prev["label"], prev["target"] = action_label, v   # remember for next call's success check
         return v
     return policy
@@ -385,8 +389,8 @@ def make_llm_policy(mdp, labels, cfg, act_fn, system_prompt, messages,
         mdp: The RoutingMDP being explored in this phase.
         labels: (u, v) -> 'aK' label mapping for this instance.
         cfg: ExploreConfig with the step/retry/context settings to use.
-        act_fn: LLM call function (system, messages) ->
-            raw_text (expected to already include retry/backoff).
+        act_fn: LLM call function (system, messages) -> (raw_text,
+            reasoning) (expected to already include retry/backoff).
         system_prompt: System prompt passed to act_fn on every call.
         messages: Shared, growing user/assistant transcript (mutated).
         step_meta: Shared list to append one metadata dict per step to (mutated).
@@ -418,7 +422,8 @@ def _zip_steps(attempts, step_meta, phase, episode_idx) -> list:
     Args:
         attempts: List of resource_mdp.Attempt from one rollout() call.
         step_meta: Parallel list of per-step dicts (action_label,
-            parse_status, retries, raw_text) logged during that call.
+            parse_status, retries, raw_text, reasoning) logged during
+            that call.
         phase: "m0" | "m1", stamped onto every resulting LiveStep.
         episode_idx: Episode index, stamped onto every resulting
             LiveStep.
@@ -431,7 +436,7 @@ def _zip_steps(attempts, step_meta, phase, episode_idx) -> list:
                      episode_idx=episode_idx,
                      action_label=m["action_label"],
                      parse_status=m["parse_status"], retries=m["retries"],
-                     raw_text=m["raw_text"])
+                     raw_text=m["raw_text"], reasoning=m["reasoning"])
             for a, m in zip(attempts, step_meta)]
 
 
@@ -449,8 +454,8 @@ def run_explore_instance(inst, cfg, act_fn=None, node_policy_fn=None) -> dict:
             labels, change).
         cfg: ExploreConfig with the episode/step/retry/context settings
             to use.
-        act_fn: LLM call function (system, messages) -> raw_text.
-            Give exactly one of act_fn or node_policy_fn.
+        act_fn: LLM call function (system, messages) -> (raw_text,
+            reasoning). Give exactly one of act_fn or node_policy_fn.
         node_policy_fn: A FACTORY, `node_policy_fn(mdp) -> policy(u, rng)
             -> node` (e.g. `lambda mdp: dry_run_policy(mdp, inst.labels)`),
             called once per phase against that phase's actual world (m0

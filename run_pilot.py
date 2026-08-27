@@ -282,21 +282,35 @@ def call_openai(model, prompt, max_tokens, base_url):
 # unlike the single-shot passive-mode callers above.
 
 
-def call_anthropic_chat(model, system, messages, max_tokens):
+def call_anthropic_chat(model, system, messages, max_tokens, thinking_budget=0):
+    """Calls Claude with the given system prompt and message history.
+    If thinking_budget > 0, enables Extended Thinking with that token
+    budget (Anthropic requires temperature 1 and max_tokens greater than
+    thinking_budget in that case) and returns the thinking content
+    separately from the visible answer."""
+    body = {"model": model, "max_tokens": max_tokens, "system": system,
+            "messages": messages}
+    if thinking_budget > 0:
+        body["thinking"] = {"type": "enabled",
+                            "budget_tokens": thinking_budget}
+        body["temperature"] = 1
+    else:
+        body["temperature"] = 0
     req = urllib.request.Request(
         "https://api.anthropic.com/v1/messages",
-        data=json.dumps({"model": model, "max_tokens": max_tokens,
-                         "temperature": 0, "system": system,
-                         "messages": messages}).encode(),
+        data=json.dumps(body).encode(),
         headers={"content-type": "application/json",
                  "x-api-key": os.environ["ANTHROPIC_API_KEY"],
                  "anthropic-version": "2023-06-01"})
     with urllib.request.urlopen(req, timeout=120) as resp:
         data = json.loads(resp.read())
-    text = "".join(b.get("text", "") for b in data.get("content", []))
+    reasoning = "".join(b.get("thinking", "") for b in data.get("content", [])
+                        if b.get("type") == "thinking")
+    text = "".join(b.get("text", "") for b in data.get("content", [])
+                   if b.get("type") == "text")
     if not text.strip():
         raise TransientLLMError("empty Anthropic response content")
-    return text, data.get("usage", {})
+    return text, reasoning, data.get("usage", {})
 
 
 def call_openai_chat(model, system, messages, max_tokens, base_url):
@@ -444,9 +458,11 @@ def run_pilot_active(deterministic, args):
 
     def act_fn(system, messages):
         nonlocal last_usage
+        reasoning = ""
         if args.provider == "anthropic":
-            text, usage = with_retry(call_anthropic_chat, args.model,
-                                     system, messages, args.max_tokens)
+            text, reasoning, usage = with_retry(
+                call_anthropic_chat, args.model, system, messages,
+                args.max_tokens, args.thinking_budget)
         elif args.provider == "azure":
             text, usage = with_retry(call_azure_chat, args.model, system,
                                      messages, args.max_tokens,
@@ -458,7 +474,7 @@ def run_pilot_active(deterministic, args):
         else:
             raise AssertionError("dry-run must not call act_fn")
         last_usage = usage
-        return text
+        return text, reasoning
 
     if args.provider == "dry-run":
         result = explore_agent.run_explore_instance(
@@ -508,9 +524,9 @@ def run_pilot_active(deterministic, args):
             {"role": "user", "content": ask}]
 
         if args.provider == "dry-run":
-            raw, usage = dry_run_answer(record, probe, queried), {}
+            raw, reasoning, usage = dry_run_answer(record, probe, queried), "", {}
         else:
-            raw = act_fn(system_prompt, forked_messages)
+            raw, reasoning = act_fn(system_prompt, forked_messages)
             usage = last_usage
 
         probe_result = run_probe(record, probe, raw,
@@ -522,6 +538,7 @@ def run_pilot_active(deterministic, args):
             "prompt_tokens_est": len(ask) // 4,
             "queried_pairs": queried if probe == "preservation" else None,
             "raw_response": raw,
+            "reasoning": reasoning,
             "provider_usage": usage,
             "parsed": probe_result["parsed"],
             "scored": probe_result["scored"],
@@ -568,6 +585,11 @@ def main():
                          "observation alone)")
     ap.add_argument("--explore-context-budget", type=int, default=12000,
                     help="active pilot-type only")
+    ap.add_argument("--thinking-budget", type=int, default=0,
+                    help="active pilot-type only, Anthropic provider "
+                         "only: greater than 0 enables Claude Extended "
+                         "Thinking with this token budget (requires "
+                         "--max-tokens greater than this value)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     todo = {"both": (True, False), "det": (True,), "sto": (False,)}[args.mode]
