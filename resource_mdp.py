@@ -654,7 +654,10 @@ class Attempt:
 
 
 def rollout(mdp, start, policy, rng, horizon=40):
-    """policy: callable(node, rng) -> next hop. Returns (attempts, delivered)."""
+    """Runs one episode from start until the goal is reached or horizon
+    steps are used up. At each step, asks policy for the next hop,
+    executes it via mdp.step, and records the outcome. policy: callable
+    (node, rng) -> next hop. Returns (attempts, delivered)."""
     at, t, attempts = start, 0, []
     while at != mdp.goal and t < horizon:
         v = policy(at, rng)
