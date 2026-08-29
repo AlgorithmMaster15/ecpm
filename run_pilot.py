@@ -456,8 +456,9 @@ def run_pilot_active(deterministic, args):
 
     last_usage = {}
 
+    # Passed into explore_agent for each exploration turn, and reused below for the probes.
     def act_fn(system, messages):
-        nonlocal last_usage
+        nonlocal last_usage  # so the caller can read usage after the call, since only (text, reasoning) is returned
         reasoning = ""
         if args.provider == "anthropic":
             text, reasoning, usage = with_retry(
@@ -477,6 +478,7 @@ def run_pilot_active(deterministic, args):
         return text, reasoning
 
     if args.provider == "dry-run":
+        # no API calls: a scripted policy stands in for the model's actions
         result = explore_agent.run_explore_instance(
             inst, cfg, node_policy_fn=lambda mdp: explore_agent.dry_run_policy(
                 mdp, inst.labels))
@@ -520,6 +522,7 @@ def run_pilot_active(deterministic, args):
             ask = ask.format(queried=listed)
         elif probe == "adaptation":
             ask = ask.format(start=record["start"], goal=record["goal"])
+        # each probe appends to a copy of the exploration transcript, not a fresh one
         forked_messages = list(result["messages"]) + [
             {"role": "user", "content": ask}]
 
