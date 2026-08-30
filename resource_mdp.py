@@ -714,8 +714,8 @@ def collect_balanced(mdp, k, rng, horizon=60, max_episodes=5000):
     attempts post-change (all drops -- exactly the detection evidence).
     Raises RuntimeError if max_episodes is exhausted first.
     """
-    counts = {e: 0 for e in mdp.p}
-    starts = [n for n in mdp.nodes if n != mdp.goal]
+    counts = {e: 0 for e in mdp.p}  # attempts so far per edge, updated as episodes run
+    starts = [n for n in mdp.nodes if n != mdp.goal]  # valid episode-start nodes
 
     def pol(u, r):
         outs = mdp.out_edges(u)
