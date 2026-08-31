@@ -714,8 +714,12 @@ def collect_balanced(mdp, k, rng, horizon=60, max_episodes=5000):
     attempts post-change (all drops -- exactly the detection evidence).
     Raises RuntimeError if max_episodes is exhausted first.
     """
-    counts = {e: 0 for e in mdp.p}  # attempts so far per edge, updated as episodes run
-    starts = [n for n in mdp.nodes if n != mdp.goal]  # valid episode-start nodes
+
+    # attempts so far per edge, updated as episodes run
+    counts = {e: 0 for e in mdp.p}
+
+    # valid episode-start nodes
+    starts = [n for n in mdp.nodes if n != mdp.goal]
 
     def pol(u, r):
         outs = mdp.out_edges(u)
@@ -724,7 +728,11 @@ def collect_balanced(mdp, k, rng, horizon=60, max_episodes=5000):
         counts[(u, choice)] += 1          # the attempt will happen
         return choice
 
+    # completed rollouts, one entry per episode
     episodes = []
+
+    # runs until every edge has at least k attempts
+    # aborts with RuntimeError once max_episodes is reached
     while counts and min(counts.values()) < k:
         if len(episodes) >= max_episodes:
             raise RuntimeError("coverage not reached; raise max_episodes "
@@ -1030,15 +1038,23 @@ def _subsample_episodes(episodes, budget, rng):
     """Uniform per-pair subsample of at most `budget` events per listed
     (state, action) pair, preserving episode membership and within-episode
     order. Original t values are kept, so elisions show as t-jumps."""
+
+    # dict: for each (node, action) pair, the list of (episode_idx, step_idx) locations where it occurs
     where = defaultdict(list)
+
     for i, ep in enumerate(episodes):
         for j, a in enumerate(ep):
             where[(a.node, a.chosen)].append((i, j))
+
     keep = set()
+
+    # per pair, keep everything if there is space; otherwise sample exactly `budget`
     for pair in sorted(where):
         slots = where[pair]
         keep.update(slots if len(slots) <= budget
                     else rng.sample(slots, budget))
+
+    # rebuild episodes from only the kept coordinates, preserving order
     out = []
     for i, ep in enumerate(episodes):
         kept = [a for j, a in enumerate(ep) if (i, j) in keep]

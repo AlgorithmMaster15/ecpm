@@ -131,7 +131,7 @@ def test_run_explore_instance_dry_run():
     metrics = compute_explore_metrics(inst, m0, m1)
     assert metrics["optimal_action_rate_m0"] == 1.0
     assert metrics["parse_failure_rate_m0"] == 0.0
-    assert metrics["giveup_rate_m0"] == 0.0
+    assert metrics["retries_exhausted_rate_m0"] == 0.0
     print(f"PASS run_explore_instance dry-run: M0 ran {len(m0)} episodes, "
          f"M1 ran {len(m1)} episodes, {len(broken_attempts)} attempts at "
          f"the broken edge {u}->{v}, all failed")

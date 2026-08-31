@@ -51,7 +51,7 @@ class LiveStep:
     phase: str              # "m0" | "m1"
     episode_idx: int         # which episode (0-based)
     action_label: str       # the 'aK' label the model actually chose
-    parse_status: str       # ok | malformed_json | invalid_object | illegal_action | giving_up
+    parse_status: str       # ok | malformed_json | invalid_object | illegal_action | retries_exhausted
     retries: int              # correction attempts before this action was accepted
     raw_text: str             # model's full reply for this step
     reasoning: str = ""      # model's reasoning for this step, kept separate from raw_text (empty for dry-run and for providers without a separate reasoning channel)
@@ -364,7 +364,7 @@ def _build_recording_policy(mdp, labels, cfg, messages, step_meta, *,
                 # retries exhausted: fall back to a random legal action
                 # so rollout() still gets a legal move, just flagged
                 action_label = rng.choice(menu) if menu else None
-                status = "giving_up"
+                status = "retries_exhausted"
             v = inv.get((u, action_label))   # translate the chosen label back to a node
             if v is None:
                 v = menu_cache.get(u) and inv.get((u, menu_cache[u][0]))
