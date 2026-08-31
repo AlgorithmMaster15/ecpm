@@ -128,7 +128,7 @@ ASKS_ACTIVE = {
         'true|false}}, ...]}} containing every listed pair exactly once. '
         'No other text.'),
     "adaptation": (
-        'Plan a route for the CURRENT network (as of your most recent '
+        'Plan a route for the current network (as of your most recent '
         'exploration) from {start} to {goal}. Answer with exactly one '
         'JSON object of the form {{"route": [{{"node": "...", "action": '
         '"..."}}, ...]}}: at most 32 steps, the first step\'s node must '
