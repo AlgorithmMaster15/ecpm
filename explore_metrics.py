@@ -9,7 +9,7 @@ Stdlib only. Python 3.8+.
 
 from __future__ import annotations
 
-from resource_mdp import broken_link_usage, optimal_ties, score_route
+from resource_mdp import RoutingMDP, broken_link_usage, optimal_ties, score_route
 
 
 def _outcome_counts(episodes) -> dict:
@@ -49,12 +49,12 @@ def _optimal_action_rate(mdp, steps) -> float | None:
         steps: List of LiveStep from one episode.
 
     Returns:
-        Fraction in [0, 1] over steps that weren't a "giving_up"
-        fallback, or None if every step gave up (nothing to score).
+        Fraction in [0, 1] over steps that weren't a "retries_exhausted"
+        fallback, or None if every step exhausted retries (nothing to score).
     """
     _, best = mdp.optimal()
     ties = optimal_ties(mdp)
-    scored = [s for s in steps if s.parse_status != "giving_up"]
+    scored = [s for s in steps if s.parse_status != "retries_exhausted"]
     if not scored:
         return None
     hits = sum(1 for s in scored
@@ -102,6 +102,38 @@ def _route_regrets(mdp, start, episodes) -> list:
     return out
 
 
+def _edge_mle(mdp, steps) -> dict:
+    """Laplace-smoothed success-rate estimate per edge from `steps` alone
+    (0.5 prior for edges never attempted) -- what the model could have
+    believed the reliabilities to be, as opposed to the true `mdp.p`.
+
+    Args:
+        mdp: RoutingMDP whose edges (mdp.p keys) define the action set.
+        steps: List of LiveStep/Attempt to estimate from.
+
+    Returns:
+        {(u, v): p_hat} for every edge in mdp.p.
+    """
+    attempts = {edge: 0 for edge in mdp.p}
+    successes = {edge: 0 for edge in mdp.p}
+    for s in steps:
+        edge = (s.node, s.chosen)
+        if edge in attempts:
+            attempts[edge] += 1
+            successes[edge] += s.success
+    return {edge: (successes[edge] + 1) / (attempts[edge] + 2)
+           for edge in mdp.p}
+
+
+def _belief_mdp(mdp, steps) -> RoutingMDP:
+    """Same topology as `mdp`, but with true probabilities replaced by the
+    model's own MLE belief from `steps` (see _edge_mle). Used to test
+    whether later actions track this stale self-derived model rather than
+    the (possibly since-changed) real one -- see "Imperfect World Models
+    are Exploitable" (arXiv:2605.15960)."""
+    return RoutingMDP(mdp.nodes, mdp.goal, _edge_mle(mdp, steps))
+
+
 def compute_explore_metrics(inst, m0_episodes, m1_episodes) -> dict:
     """Metrics computed from the LiveStep logs, reusing resource_mdp's frozen scoring primitives
     unmodified wherever possible.
@@ -116,9 +148,12 @@ def compute_explore_metrics(inst, m0_episodes, m1_episodes) -> dict:
         broken_link_usage_before/after_first_failure,
         adaptation_lag_steps, steps_to_goal_m0/m1 (mean/median),
         episode_outcome_counts_m0/m1, route_regret_m0/m1,
-        parse_failure_rate_m0/m1, giveup_rate_m0/m1.
+        parse_failure_rate_m0/m1, retries_exhausted_rate_m0/m1,
+        optimal_action_rate_m1_by_m0_belief.
     """
+    m0_steps = [s for ep in m0_episodes for s in ep.steps]
     m1_steps = [s for ep in m1_episodes for s in ep.steps]
+    m0_belief = _belief_mdp(inst.m0, m0_steps)
 
     before = after = adaptation_lag = None
     edge = inst.change.get("edge")
@@ -144,17 +179,17 @@ def compute_explore_metrics(inst, m0_episodes, m1_episodes) -> dict:
                 adaptation_lag = max(0, last_use - first_fail)
 
     def parse_stats(episodes) -> tuple:
-        """(parse_failure_rate, giveup_rate) across all steps in
+        """(parse_failure_rate, retries_exhausted_rate) across all steps in
         `episodes`, or (None, None) if there are no steps."""
         steps = [s for ep in episodes for s in ep.steps]
         if not steps:
             return None, None
         fail = sum(1 for s in steps if s.parse_status != "ok")
-        giveup = sum(1 for s in steps if s.parse_status == "giving_up")
-        return fail / len(steps), giveup / len(steps)
+        exhausted = sum(1 for s in steps if s.parse_status == "retries_exhausted")
+        return fail / len(steps), exhausted / len(steps)
 
-    pf_m0, gu_m0 = parse_stats(m0_episodes)
-    pf_m1, gu_m1 = parse_stats(m1_episodes)
+    pf_m0, re_m0 = parse_stats(m0_episodes)
+    pf_m1, re_m1 = parse_stats(m1_episodes)
 
     return {
         "optimal_action_rate_m0": _mean(_episode_action_rates(inst.m0,
@@ -181,5 +216,9 @@ def compute_explore_metrics(inst, m0_episodes, m1_episodes) -> dict:
         "route_regret_m1": _mean(_route_regrets(inst.m1, inst.start,
                                                 m1_episodes)),
         "parse_failure_rate_m0": pf_m0, "parse_failure_rate_m1": pf_m1,
-        "giveup_rate_m0": gu_m0, "giveup_rate_m1": gu_m1,
+        "retries_exhausted_rate_m0": re_m0, "retries_exhausted_rate_m1": re_m1,
+        # high here alongside a low optimal_action_rate_m1 means the model
+        # is still planning against its own stale M0 belief, not reality
+        "optimal_action_rate_m1_by_m0_belief": _mean(
+            _episode_action_rates(m0_belief, m1_episodes)),
     }
