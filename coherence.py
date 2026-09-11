@@ -24,7 +24,7 @@ import json
 import random
 from dataclasses import dataclass
 
-from ecpm_parser import extract_json_object
+from explore_agent import extract_last_json_object
 from resource_mdp import invert_labels, legal_actions
 
 # --------------------------------------------------------------------------
@@ -54,8 +54,16 @@ class DFAView:
 def build_dfa_view(mdp, labels) -> DFAView:
     menu = legal_actions(mdp, labels)
     inv = invert_labels(labels)
-    k = max((len(m) for m in menu.values()), default=0)
-    sigma = tuple(f"a{i + 1}" for i in range(k))
+    # sigma must be every label VALUE ever assigned in `labels` (shared,
+    # stable across M0/M1), not derived from the current mdp's max menu
+    # SIZE: under hard_removal a menu shrinks but keeps its surviving
+    # labels' original numbers, e.g. a 2-action menu can be {a2, a3}.
+    # Deriving sigma from size alone would then never generate 'a3' as a
+    # candidate at all, silently dropping it from every enumerated
+    # language even though dfa_step (via the real per-node menu) accepts
+    # it fine.
+    sigma = tuple(sorted({lab for lab in labels.values()},
+                        key=lambda s: int(s[1:])))
     return DFAView(mdp=mdp, menu=menu, inv=inv, sigma=sigma)
 
 
@@ -167,7 +175,7 @@ def myhill_nerode_boundary(q1, q2, dfa, maxlen):
     (see test_coherence.py for the direct check).
 
     Returns (mnb_12, mnb_21): lists of label tuples sorted by (length,
-    lexicographic value) -- a full, deterministic order, not just "by
+    lexicographic value), a full, deterministic order, not just "by
     length": iterating a Python set of tuples has no defined order, so
     without the lexicographic tiebreak, two calls with the same true
     boundary can return the same words in a different order depending on
@@ -196,14 +204,13 @@ def myhill_nerode_boundary(q1, q2, dfa, maxlen):
 
 
 def visited_nodes(episodes):
-    """Every node visited across these episodes (LiveStep.node and
-    .next_node). Steps whose parse_status isn't "ok" are skipped: under
-    the current explore_agent.py loop this never actually happens (a
-    step is only ever logged once it parses "ok"; a step that exhausts
-    its retries aborts the episode before being logged at all), but this
-    guards against any future change that logs a failed step."""
+    """Every node visited: each episode's own starting node
+    (ep.steps[0].node, regardless of parse_status), plus LiveStep.node/
+    .next_node for every step that parses "ok"."""
     seen = set()
     for ep in episodes:
+        if ep.steps:
+            seen.add(ep.steps[0].node)
         for st in ep.steps:
             if st.parse_status != "ok":
                 continue
@@ -214,10 +221,16 @@ def visited_nodes(episodes):
 
 def visited_histories(episodes):
     """{node: [label_seq, ...]}: the distinct real action-label
-    sequences that reached each node, in first-seen order. Steps whose
-    parse_status isn't "ok" are skipped (see visited_nodes)."""
+    sequences that reached each node, in first-seen order. Includes each
+    episode's starting node with the empty sequence, so a start node
+    with no return loop can still be sampled. Steps whose parse_status
+    isn't "ok" are skipped for the action-label histories."""
     out = {}
     for ep in episodes:
+        if ep.steps:
+            bucket = out.setdefault(ep.steps[0].node, [])
+            if () not in bucket:
+                bucket.append(())
         hist = []
         for st in ep.steps:
             if st.parse_status != "ok":
@@ -235,23 +248,15 @@ def visited_histories(episodes):
 # --------------------------------------------------------------------------
 
 
-def _shortest_histories_from(dfa, start, forbid_first=None):
-    """BFS giving the shortest legal label-sequence from `start` to every
-    reachable node. If `forbid_first` is given, that label is excluded as
-    the very first step, forcing a route that diverges immediately; used
-    by alternate_history to find a genuinely different path. The
-    state space is finite (<= n_nodes), so this always terminates on its
-    own; no artificial depth cap is needed at our graph sizes."""
+def shortest_histories(dfa, start):
+    """{node: shortest legal label-sequence from start}, for every
+    reachable node. State space is finite, so this always terminates."""
     best = {start: ()}
     frontier = [start]
-    depth = 0
     while frontier:
-        depth += 1
         nxt = []
         for node in frontier:
             for a in dfa.sigma:
-                if depth == 1 and node == start and a == forbid_first:
-                    continue
                 v = dfa_step(dfa, node, a)
                 if v is not None and v not in best:
                     best[v] = best[node] + (a,)
@@ -260,27 +265,40 @@ def _shortest_histories_from(dfa, start, forbid_first=None):
     return best
 
 
-def shortest_histories(dfa, start):
-    """{node: shortest legal label-sequence from start}, for every
-    reachable node."""
-    return _shortest_histories_from(dfa, start)
-
-
 def alternate_history(dfa, start, target, avoid):
     """A second, legal label-sequence from `start` to `target`, distinct
-    from `avoid`. Tries the plain shortest path first; if that happens
-    to equal `avoid`, retries with avoid's first action forbidden at
-    `start`, forcing a genuinely different route. None if no such path
-    exists (the pair is then skipped by the caller, never silently
-    substituted with something else)."""
-    cand = shortest_histories(dfa, start).get(target)
-    if cand is not None and cand != avoid:
-        return cand
-    if not avoid:
+    from `avoid` anywhere along the way, not just at the first step.
+    Searches over (node, diverged) instead of just node, where diverged
+    means the path so far already differs from avoid's own prefix of the
+    same length; once true, any continuation qualifies. Bounds the
+    search to about n_nodes + len(avoid) states. None if no such path
+    exists (the pair is then skipped by the caller)."""
+    shortest = shortest_histories(dfa, start).get(target)
+    if shortest is None:
         return None
-    cand2 = _shortest_histories_from(dfa, start, forbid_first=avoid[0]).get(target)
-    if cand2 is not None and cand2 != avoid:
-        return cand2
+    if shortest != avoid:
+        return shortest
+    avoid_len = len(avoid)
+    best = {(start, False): ()}
+    frontier = [(start, False)]
+    while frontier:
+        nxt = []
+        for node, diverged in frontier:
+            path = best[(node, diverged)]
+            for a in dfa.sigma:
+                v = dfa_step(dfa, node, a)
+                if v is None:
+                    continue
+                p2 = path + (a,)
+                d2 = (diverged or len(p2) > avoid_len
+                     or p2[-1] != avoid[len(p2) - 1])
+                if v == target and d2:
+                    return p2
+                key = (v, d2)
+                if key not in best:
+                    best[key] = p2
+                    nxt.append(key)
+        frontier = nxt
     return None
 
 
@@ -450,18 +468,22 @@ def accepted_set(candidates, verdicts):
 
     Returns (accepted, violations, missing), all sets of candidates:
       accepted:   prefix-closed derived acceptance holds.
-      violations: candidate itself True, but a proper prefix False.
-      missing:    candidate's own answer or a needed prefix's answer
-                  is None; derived acceptance is indeterminate.
+      violations: candidate itself True, but a proper prefix False,
+                  detected as soon as both of those two answers are
+                  known, even if some other prefix in between is still
+                  missing; a known contradiction doesn't need the rest
+                  of the chain answered to already be a violation.
+      missing:    no contradiction found yet, but the candidate's own
+                  answer or a needed prefix's answer is still None.
     """
     accepted, violations, missing = set(), set(), set()
     for x in candidates:
         own = verdicts.get(x)
         prefix_verdicts = [verdicts.get(p) for p in _proper_prefixes(x)]
-        if own is None or any(v is None for v in prefix_verdicts):
-            missing.add(x)
-        elif own and not all(prefix_verdicts):
+        if own and any(v is False for v in prefix_verdicts):
             violations.add(x)
+        elif own is None or any(v is None for v in prefix_verdicts):
+            missing.add(x)
         elif own:
             accepted.add(x)
     return accepted, violations, missing
@@ -473,15 +495,16 @@ def accepted_set(candidates, verdicts):
 
 
 def score_compression(targets, verdicts_s1, verdicts_s2):
-    """1 if every target has the same derived acceptance under s1 and
-    s2, 0 if any differs. Targets with missing data under either history
-    are excluded from the comparison (can't be judged); if that leaves
-    no comparable targets at all, returns None (undefined), not a
-    vacuous 1."""
+    """1 if every queried candidate (targets and their prefixes) has the
+    same derived acceptance under s1 and s2, 0 if any differs: a
+    disagreement on a prefix is still a real compression error for this
+    pair, not something to drop just because it wasn't the target
+    itself. Candidates missing on either side are excluded; if nothing
+    is comparable, returns None."""
     candidates = expand_with_prefixes(targets)
     acc1, _, miss1 = accepted_set(candidates, verdicts_s1)
     acc2, _, miss2 = accepted_set(candidates, verdicts_s2)
-    comparable = [t for t in targets if t not in miss1 and t not in miss2]
+    comparable = [x for x in candidates if x not in miss1 and x not in miss2]
     if not comparable:
         return None
     return 1 if all((t in acc1) == (t in acc2) for t in comparable) else 0
@@ -625,12 +648,13 @@ def make_dry_run_answer_fn(dfa, q):
 
 
 def parse_validity(raw, candidate):
-    """Parse one single-elicit validity answer: exactly one JSON object
-    {"valid": true|false}, matching the existing "exactly one JSON
-    object, no other text" convention (cf. ecpm_parser.parse_detection).
-    Built on ecpm_parser.extract_json_object; same status vocabulary as
-    the other probe parsers."""
-    obj = extract_json_object(raw)
+    """Parse one single-elicit validity answer: a JSON object
+    {"valid": true|false}; same status vocabulary as the other probe
+    parsers. Takes the LAST parseable object (explore_agent's
+    reason-then-answer convention, which the coherence system prompt
+    also states), not the first: the first would return a stale verdict
+    whenever the model reconsiders mid-reply."""
+    obj = extract_last_json_object(raw)
     if obj is None:
         return {"status": "malformed_json"}
     if not isinstance(obj.get("valid"), bool):

@@ -344,6 +344,19 @@ def test_accepted_set_clean_violation_missing():
     print("PASS accepted_set (clean / closure violation / missing answer)")
 
 
+def test_accepted_set_known_violation_survives_unrelated_missing_prefix():
+    """Regression: a1=False, a1a2=None, a1a2a1=True. a1a2a1 and its
+    prefix a1 already prove a closure violation regardless of what the
+    still-missing a1a2 turns out to be: it must not be classified as
+    merely "missing"."""
+    candidates = {("a1",), ("a1", "a2"), ("a1", "a2", "a1")}
+    verdicts = {("a1",): False, ("a1", "a2"): None, ("a1", "a2", "a1"): True}
+    acc, viol, miss = accepted_set(candidates, verdicts)
+    assert ("a1", "a2", "a1") in viol
+    assert ("a1", "a2", "a1") not in miss
+    print("PASS accepted_set (known violation survives an unrelated missing prefix)")
+
+
 # --------------------------------------------------------------------------
 # score_compression: oracle + both negative-control fakes
 # --------------------------------------------------------------------------
@@ -513,6 +526,26 @@ def test_build_dfa_view_sigma_is_max_menu_size():
     print("PASS build_dfa_view (sigma == graph-wide max menu size)")
 
 
+def test_build_dfa_view_sigma_survives_hard_removal_gap():
+    """Regression: sigma must come from the actual label VALUES ever
+    assigned, not the current max menu SIZE. C originally has 3 actions
+    (a1, a2, a3); a2's edge is gone (hard-removal-style: absent from
+    mdp.p, but the labels dict -- shared/stable across M0/M1 -- still
+    maps it), leaving menu(C) = [a1, a3], size 2. A size-based sigma
+    would only ever be ('a1', 'a2'), silently dropping a3 from every
+    enumerated language even though it's still a real, legal action."""
+    mdp = RoutingMDP(["S", "C", "X", "Z"], "X",
+                     {("S", "C"): 1.0, ("C", "X"): 1.0, ("C", "Z"): 1.0})
+    labels = {("S", "C"): "a1", ("C", "X"): "a1", ("C", "Y"): "a2",
+             ("C", "Z"): "a3"}   # (C,Y)="a2" has no edge in mdp.p anymore
+    dfa = build_dfa_view(mdp, labels)
+    assert dfa.menu["C"] == ["a1", "a3"]
+    assert "a3" in dfa.sigma
+    assert dfa_step(dfa, "C", "a3") == "Z"
+    assert ("a3",) in language_upto("C", dfa, 3)
+    print("PASS build_dfa_view (sigma survives a hard-removal numbering gap)")
+
+
 def test_dfa_step_none_node_and_unknown_label():
     """None (reject) stays absorbing when stepped again; a label outside
     a node's own menu (but within sigma) rejects without raising."""
@@ -645,6 +678,24 @@ def test_visited_histories_on_empty_episodes():
     print("PASS visited_nodes / visited_histories (empty episode list)")
 
 
+def test_visited_histories_includes_start_node_with_empty_history():
+    """Regression: an episode S -> A -> T never revisits S, so S must
+    still appear with the empty history, or it could never be sampled
+    as a compression/distinction node at all."""
+    def _step(node, chosen, next_node, label, t):
+        return LiveStep(t=t, node=node, chosen=chosen, success=True,
+                        next_node=next_node, phase="m0", episode_idx=0,
+                        action_label=label, parse_status="ok", retries=0,
+                        raw_text="{}")
+    ep = EpisodeOutcome(episode_idx=0, phase="m0", outcome="reached_goal",
+                        steps=[_step("S", "A", "A", "a1", 1),
+                               _step("A", "T", "T", "a1", 2)])
+    vh = visited_histories([ep])
+    assert vh["S"] == [()]
+    assert "S" in visited_nodes([ep])
+    print("PASS visited_histories (start node kept with the empty history)")
+
+
 # --------------------------------------------------------------------------
 # Extra coverage: shortest_histories / alternate_history
 # --------------------------------------------------------------------------
@@ -660,12 +711,10 @@ def test_shortest_histories_unreachable_node_absent():
     print("PASS shortest_histories / alternate_history (unreachable node)")
 
 
-def test_alternate_history_forbid_first_branch_triggers():
-    """S has two routes to T of equal length (via A or via B). The
-    plain shortest-path search finds one of them; when that happens to
-    equal `avoid`, alternate_history must retry with that route's first
-    action forbidden and land on the genuinely different other route,
-    not just fail."""
+def test_alternate_history_finds_route_diverging_at_first_step():
+    """S has two routes to T of equal length (via A or via B), diverging
+    right away. When the plain shortest-path search's result equals
+    `avoid`, alternate_history must still find the other one."""
     mdp = RoutingMDP(["S", "A", "B", "T"], "T",
                      {("S", "A"): 1.0, ("S", "B"): 1.0, ("A", "T"): 1.0,
                       ("B", "T"): 1.0})
@@ -676,7 +725,25 @@ def test_alternate_history_forbid_first_branch_triggers():
     alt = alternate_history(dfa, "S", "T", avoid=shortest)
     assert alt is not None and alt != shortest
     assert run_sequence(dfa, "S", alt) == "T"
-    print("PASS alternate_history (forbid-first retry finds the other route)")
+    print("PASS alternate_history (finds a route diverging at the first step)")
+
+
+def test_alternate_history_finds_route_diverging_later():
+    """Regression: S->A->T (shortest, avoid) and S->A->C->T both start
+    with the same action; the alternate only diverges at the second
+    step. A search that only ever forbids avoid's first action would
+    never find this one."""
+    mdp = RoutingMDP(["S", "A", "C", "T"], "T",
+                     {("S", "A"): 1.0, ("A", "T"): 1.0, ("A", "C"): 1.0,
+                      ("C", "T"): 1.0})
+    labels = {("S", "A"): "a1", ("A", "T"): "a1", ("A", "C"): "a2",
+             ("C", "T"): "a1"}
+    dfa = build_dfa_view(mdp, labels)
+    shortest = shortest_histories(dfa, "S")["T"]
+    assert shortest == ("a1", "a1")
+    alt = alternate_history(dfa, "S", "T", avoid=shortest)
+    assert alt == ("a1", "a2", "a1")
+    print("PASS alternate_history (finds a route diverging after the first step)")
 
 
 # --------------------------------------------------------------------------
@@ -759,11 +826,8 @@ def test_sample_distinction_pairs_empty_boundary_within_cap_but_eligible():
     mnb_12, mnb_21 = myhill_nerode_boundary("A1", "B1", dfa, 2)
     assert mnb_12 == [] and mnb_21 == []   # but empty within a short cap
 
-    # visit both A1 and B1 (as arrival points from some root) so the pair
-    # is actually sampled, and confirm the eligible pair carries these
-    # empty boundary lists straight through: downstream target sampling
-    # then has nothing to draw from for this pair, which is exactly the
-    # gap the methodology doc flags.
+    # A1 and B1 are each an episode's own starting node (visited with the
+    # empty history), so the pair is actually sampled.
     def _step(node, chosen, next_node, label, t, ep):
         return LiveStep(t=t, node=node, chosen=chosen, success=True,
                         next_node=next_node, phase="m0", episode_idx=ep,
@@ -771,16 +835,14 @@ def test_sample_distinction_pairs_empty_boundary_within_cap_but_eligible():
                         raw_text="{}")
     episodes = [
         EpisodeOutcome(episode_idx=0, phase="m0", outcome="horizon_cutoff",
-                       steps=[_step("X", "A1", "A1", "a1", 1, 0)]),
+                       steps=[_step("A1", "A2", "A2", "a1", 1, 0)]),
         EpisodeOutcome(episode_idx=1, phase="m0", outcome="horizon_cutoff",
-                       steps=[_step("Y", "B1", "B1", "a1", 1, 1)]),
+                       steps=[_step("B1", "B2", "B2", "a1", 1, 1)]),
     ]
-    pairs, skipped = sample_distinction_pairs(dfa, episodes, seed=1,
-                                              phase="m0", max_pairs=5,
-                                              maxlen=2)
-    assert not skipped   # A1/B1 are NOT Myhill-Nerode-equivalent, so no skip
-    ((q1, s1, q2, s2, got_12, got_21),) = pairs
-    assert {q1, q2} == {"A1", "B1"}
+    pairs, _ = sample_distinction_pairs(dfa, episodes, seed=1, phase="m0",
+                                        max_pairs=100, maxlen=2)
+    target = next(p for p in pairs if {p[0], p[2]} == {"A1", "B1"})
+    _, _, _, _, got_12, got_21 = target
     assert got_12 == [] and got_21 == []
     print("PASS sample_distinction_pairs (eligible via minimize(), empty "
          "boundary within the length cap)")
@@ -889,6 +951,19 @@ def test_score_compression_agreeing_on_rejection_scores_one():
     v2 = {("a1",): False, ("a2",): False}
     assert score_compression(targets, v1, v2) == 1
     print("PASS score_compression (agreement doesn't require acceptance, just consistency)")
+
+
+def test_score_compression_catches_prefix_level_divergence():
+    """Regression: target (a1,a2); both sides agree it's itself invalid,
+    but disagree on its prefix a1 (valid under s1, invalid under s2) --
+    which was queried too. That divergence is real evidence of a
+    compression error and must not be hidden just because it showed up
+    on a prefix instead of the target."""
+    targets = [("a1", "a2")]
+    v1 = {("a1",): True, ("a1", "a2"): False}
+    v2 = {("a1",): False, ("a1", "a2"): False}
+    assert score_compression(targets, v1, v2) == 0
+    print("PASS score_compression (catches divergence on a queried prefix)")
 
 
 def test_score_distinction_recall_both_directions_nontrivial_together():
@@ -1001,24 +1076,30 @@ def test_boundary_matches_independent_brute_force_across_seeds():
     development: without a lexicographic tiebreak, same-length words came
     back in an order that depended on incidental Python set-iteration
     layout, which no single hand-built fixture happened to expose (see
-    myhill_nerode_boundary's docstring)."""
+    myhill_nerode_boundary's docstring). Covers both no_change (nothing
+    ever removed) and hard_removal (labels can have numbering gaps,
+    checked on both M0 and M1) -- no_change alone would never exercise
+    the gap case a size-based sigma got wrong (see
+    test_build_dfa_view_sigma_survives_hard_removal_gap)."""
     maxlen = 3
     n_pairs_checked = 0
-    for seed in range(60):
-        inst = make_pair(seed, "no_change", deterministic=True)
-        dfa = build_dfa_view(inst.m0, inst.labels)
-        nodes = inst.m0.nodes
-        for i, q1 in enumerate(nodes):
-            for q2 in nodes[i + 1:]:
-                got_12, got_21 = myhill_nerode_boundary(q1, q2, dfa, maxlen)
-                want_12 = _brute_force_boundary(q1, q2, dfa, maxlen)
-                want_21 = _brute_force_boundary(q2, q1, dfa, maxlen)
-                assert got_12 == want_12, (seed, q1, q2, got_12, want_12)
-                assert got_21 == want_21, (seed, q1, q2, got_21, want_21)
-                n_pairs_checked += 1
-    assert n_pairs_checked > 1500, n_pairs_checked
+    for condition in ("no_change", "hard_removal"):
+        for seed in range(60):
+            inst = make_pair(seed, condition, deterministic=True)
+            for mdp in (inst.m0, inst.m1):
+                dfa = build_dfa_view(mdp, inst.labels)
+                nodes = mdp.nodes
+                for i, q1 in enumerate(nodes):
+                    for q2 in nodes[i + 1:]:
+                        got_12, got_21 = myhill_nerode_boundary(q1, q2, dfa, maxlen)
+                        want_12 = _brute_force_boundary(q1, q2, dfa, maxlen)
+                        want_21 = _brute_force_boundary(q2, q1, dfa, maxlen)
+                        assert got_12 == want_12, (condition, seed, q1, q2, got_12, want_12)
+                        assert got_21 == want_21, (condition, seed, q1, q2, got_21, want_21)
+                        n_pairs_checked += 1
+    assert n_pairs_checked > 5000, n_pairs_checked
     print(f"PASS myhill_nerode_boundary matches independent brute force "
-         f"across {n_pairs_checked} (seed, node-pair, direction) checks")
+         f"across {n_pairs_checked} (condition, seed, node-pair, direction) checks")
 
 
 def test_minimize_same_class_implies_identical_language_across_seeds():
@@ -1030,24 +1111,30 @@ def test_minimize_same_class_implies_identical_language_across_seeds():
     example. Multi-member classes are naturally rare in these graphs
     (matches the ~0.17-per-instance rate measured in the methodology
     doc), so this also reports how many it actually found across the 60
-    seeds, not just that zero would have trivially passed."""
+    seeds, not just that zero would have trivially passed. Covers both
+    no_change and hard_removal (M0 and M1), for the same reason as
+    test_boundary_matches_independent_brute_force_across_seeds."""
     maxlen = 4
     n_classes_checked = 0
-    for seed in range(60):
-        inst = make_pair(seed, "no_change", deterministic=True)
-        dfa = build_dfa_view(inst.m0, inst.labels)
-        part = minimize(dfa)
-        by_class = {}
-        for node, cls in part.items():
-            by_class.setdefault(cls, []).append(node)
-        for members in by_class.values():
-            if len(members) < 2:
-                continue
-            langs = [language_upto(m, dfa, maxlen) for m in members]
-            assert all(l == langs[0] for l in langs), (seed, members, langs)
-            n_classes_checked += 1
+    for condition in ("no_change", "hard_removal"):
+        for seed in range(60):
+            inst = make_pair(seed, condition, deterministic=True)
+            for mdp in (inst.m0, inst.m1):
+                dfa = build_dfa_view(mdp, inst.labels)
+                part = minimize(dfa)
+                by_class = {}
+                for node, cls in part.items():
+                    by_class.setdefault(cls, []).append(node)
+                for members in by_class.values():
+                    if len(members) < 2:
+                        continue
+                    langs = [language_upto(m, dfa, maxlen) for m in members]
+                    assert all(l == langs[0] for l in langs), \
+                        (condition, seed, members, langs)
+                    n_classes_checked += 1
     print(f"PASS minimize (same-class nodes have identical language across "
-         f"{n_classes_checked} multi-member classes found over 60 seeds)")
+         f"{n_classes_checked} multi-member classes found over 120 "
+         f"(condition, seed, world) combinations)")
 
 
 # --------------------------------------------------------------------------
@@ -1118,6 +1205,7 @@ if __name__ == "__main__":
     test_round_robin_no_filler_when_undersupplied()
     test_sample_compression_targets_balanced_no_duplicates()
     test_accepted_set_clean_violation_missing()
+    test_accepted_set_known_violation_survives_unrelated_missing_prefix()
     test_score_compression_oracle_and_fakes()
     test_score_compression_undefined_when_nothing_comparable()
     test_score_distinction_recall_known_values()
@@ -1126,6 +1214,7 @@ if __name__ == "__main__":
     test_diagnostics_for_pair()
     test_parse_validity_status_coverage()
     test_build_dfa_view_sigma_is_max_menu_size()
+    test_build_dfa_view_sigma_survives_hard_removal_gap()
     test_dfa_step_none_node_and_unknown_label()
     test_language_upto_exact_set_small_graph()
     test_minimize_all_distinct_simple_chain()
@@ -1134,8 +1223,10 @@ if __name__ == "__main__":
     test_boundary_both_directions_nonempty_simultaneously()
     test_visited_skips_non_ok_steps()
     test_visited_histories_on_empty_episodes()
+    test_visited_histories_includes_start_node_with_empty_history()
     test_shortest_histories_unreachable_node_absent()
-    test_alternate_history_forbid_first_branch_triggers()
+    test_alternate_history_finds_route_diverging_at_first_step()
+    test_alternate_history_finds_route_diverging_later()
     test_sample_distinction_pairs_max_pairs_truncation_and_reproducible()
     test_sample_compression_pairs_reproducible()
     test_sample_distinction_pairs_empty_boundary_within_cap_but_eligible()
@@ -1149,6 +1240,7 @@ if __name__ == "__main__":
     test_accepted_set_rejection_is_not_a_violation()
     test_score_compression_partial_missing_still_scores()
     test_score_compression_agreeing_on_rejection_scores_one()
+    test_score_compression_catches_prefix_level_divergence()
     test_score_distinction_recall_both_directions_nontrivial_together()
     test_diagnostics_accuracy_by_length_and_closure_violations()
     test_diagnostics_missing_guard_suppresses_spurious_divergence()

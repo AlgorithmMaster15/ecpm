@@ -212,29 +212,72 @@ def ask_block_active(record, probe, queried):
 # one candidate continuation per query, appended as an independent fork
 # off a frozen checkpoint transcript (run_pilot.py's run_coherence_probes),
 # never a growing multi-turn conversation, so one candidate's answer can
-# never bias another's.
+# never bias another's. Uses its own system prompt, not the exploration
+# one: that one requires {"action": "aK"} and forbids any other JSON
+# object, which would conflict with the {"valid": ...} answer asked for
+# here even though the frozen observation history stays the same.
 # --------------------------------------------------------------------
 
+COHERENCE_SYSTEM_TEMPLATE = (
+    # World description restored verbatim from build_system_prompt: the
+    # frozen transcript was produced under it, it carries the
+    # fail-and-stay rule the validity convention rests on, and it is the
+    # only place the goal node is ever named (the observation turns
+    # never are). Only the answer contract below differs.
+    'You are exploring an unfamiliar courier network of locations '
+    'connected by one-way links. At each location you may attempt one '
+    'of the listed actions (aK). An attempt either delivers you to '
+    "that action's destination, or fails and you stay where you are "
+    '-- either way it costs one step. You do not know the network\'s '
+    'structure or reliabilities in advance: you must learn them by '
+    'trying actions and observing what happens. Your goal was to reach '
+    '{goal} in as few steps as possible, across several episodes. '
+    'The network\'s reliabilities may or may not change between '
+    'episodes; nothing will tell you this directly -- watch your own '
+    'outcomes.\n'
+    'You have finished exploring; the conversation below is your own '
+    'exploration transcript. You will now be asked separate questions '
+    'about hypothetical positions in that same network, based on what '
+    'you observed. For every question: you may reason briefly first, '
+    'but end your reply with exactly one JSON object of the form '
+    '{{"valid": true}} or {{"valid": false}}. Output no other JSON '
+    'object in your reply.')
+
+
+def build_coherence_system_prompt(goal):
+    """System prompt for the coherence forks. Mirrors
+    explore_agent.build_system_prompt's world description so the frozen
+    transcript keeps the context it was produced under, and swaps only
+    the required answer object."""
+    return COHERENCE_SYSTEM_TEMPLATE.format(goal=goal)
+
 ASK_HYPOTHETICAL_HISTORY = (
-    'Suppose you had taken exactly this sequence of actions to reach '
-    'your current position: {history}.')
+    'Starting at node {start}, suppose you had taken exactly this '
+    'sequence of actions to reach your current position: {history}.')
 
 ASKS_COHERENCE = (
     'Question: from where that leaves you, would the following action '
     'sequence be legal to attempt, step by step -- every action in it '
-    'listed and attemptable at the node it is attempted from?\n'
+    'listed at the node it is attempted from?\n'
     '{candidate}\n'
-    'Answer with exactly one JSON object: {{"valid": true}} or '
-    '{{"valid": false}}. No other text.')
+    'An action counts as legal whenever it is listed at that node, even '
+    'if attempting it would fail and leave you where you are; in that '
+    'case the next action is judged from that same node. Judge only '
+    'whether each action is listed, not whether it succeeds.\n'
+    'End your reply with exactly one JSON object: {{"valid": true}} or '
+    '{{"valid": false}}.')
 
 
-def ask_block_coherence(history, candidate):
+def ask_block_coherence(start, history, candidate):
     """One single-elicit coherence query: the checkpoint-anchored
     hypothetical-history restatement, followed by the validity question
-    for one candidate continuation; never naming the node the history
-    actually leaves the model at, since inferring that is the point of
-    the probe. `history` and `candidate` are label tuples like
-    ('a1', 'a2'), rendered space-separated."""
-    hist_text = ASK_HYPOTHETICAL_HISTORY.format(history=" ".join(history))
+    for one candidate continuation. Names `start` (already known to the
+    model from its own transcript) so the action sequence is
+    unambiguous, since labels are node-local; never names the node the
+    history actually leaves the model at, since inferring that is the
+    point of the probe. `history` and `candidate` are label tuples like
+    ('a1', 'a2'); an empty history reads as "no actions"."""
+    hist_text = ASK_HYPOTHETICAL_HISTORY.format(
+        start=start, history=" ".join(history) if history else "no actions")
     cand_text = ASKS_COHERENCE.format(candidate=" ".join(candidate))
     return hist_text + "\n" + cand_text

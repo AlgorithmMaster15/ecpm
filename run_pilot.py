@@ -528,8 +528,7 @@ def _seq(x):
 
 
 def run_coherence_probes(dfa, episodes, start, checkpoint_messages,
-                         system_prompt, args, *, act_fn, get_usage,
-                         seed, phase):
+                         args, *, act_fn, get_usage, seed, phase):
     """Compression + distinction-recall world-model coherence probes for
     one checkpoint (end of M0 or end of M1; see coherence.py and
     docs/coherence_probes_implementation_plan.txt). v1 scope:
@@ -546,7 +545,11 @@ def run_coherence_probes(dfa, episodes, start, checkpoint_messages,
 
     act_fn(system, messages) -> (raw_text, reasoning): the same
     provider-dispatching, retrying call used for the live exploration
-    steps and the four existing probes. get_usage() reads whatever usage
+    steps and the four existing probes, but called with
+    build_coherence_system_prompt (prompts.py), not the exploration
+    system prompt those use: the latter requires {"action": "aK"} and
+    forbids any other JSON object, which conflicts with the {"valid":
+    ...} answer format asked for here. get_usage() reads whatever usage
     act_fn's last call recorded. Ignored (dry_run_legality_reply is used
     directly instead) when args.provider == "dry-run".
 
@@ -558,12 +561,13 @@ def run_coherence_probes(dfa, episodes, start, checkpoint_messages,
     """
     maxlen = args.coherence_maxlen
     rng_targets = random.Random(f"pilot|{seed}|coherence-targets|{phase}")
+    coherence_system = build_coherence_system_prompt(dfa.mdp.goal)
 
     def ask_one(q, candidate, ask_text):
         if args.provider == "dry-run":
             return coherence.dry_run_legality_reply(dfa, q, candidate), "", {}
         messages = checkpoint_messages + [{"role": "user", "content": ask_text}]
-        raw, reasoning = act_fn(system_prompt, messages)
+        raw, reasoning = act_fn(coherence_system, messages)
         return raw, reasoning, get_usage()
 
     def collect_answers(q, history, candidates):
@@ -573,7 +577,7 @@ def run_coherence_probes(dfa, episodes, start, checkpoint_messages,
         answer."""
         verdicts, raws, reasonings, usages = {}, {}, {}, {}
         for x in candidates:
-            ask_text = ask_block_coherence(history, x)
+            ask_text = ask_block_coherence(start, history, x)
             raw, reasoning, usage = ask_one(q, x, ask_text)
             parsed = coherence.parse_validity(raw, x)
             verdicts[x] = parsed["valid"] if parsed["status"] == "ok" else None
@@ -806,11 +810,11 @@ def run_pilot_active(sc, deterministic, args):
         artifact["coherence"] = {
             "m0": run_coherence_probes(
                 dfa0, result["m0_episodes"], inst.start, m0_messages,
-                system_prompt, args, act_fn=act_fn,
+                args, act_fn=act_fn,
                 get_usage=lambda: last_usage, seed=sc["seed"], phase="m0"),
             "m1": run_coherence_probes(
                 dfa1, result["m1_episodes"], inst.start, m1_messages,
-                system_prompt, args, act_fn=act_fn,
+                args, act_fn=act_fn,
                 get_usage=lambda: last_usage, seed=sc["seed"], phase="m1"),
         }
     return artifact
@@ -912,6 +916,19 @@ def main():
                     help="coherence probes only: distinction pairs "
                          "probed per checkpoint")
     args = ap.parse_args()
+
+    if args.coherence_maxlen < 1:
+        raise SystemExit("--coherence-maxlen must be >= 1")
+    for name in ("coherence_compression_n_targets",
+                "coherence_distinction_n_boundary_targets",
+                "coherence_max_compression_pairs",
+                "coherence_max_distinction_pairs"):
+        if getattr(args, name) < 0:
+            raise SystemExit(f"--{name.replace('_', '-')} must be >= 0 "
+                             f"(0 disables that probe kind; a negative "
+                             f"value is not a smaller budget, since "
+                             f"candidates[:n] with n < 0 drops from the "
+                             f"end instead of capping from the front)")
 
     if args.list_scenarios:
         for name in sorted(SCENARIOS):
