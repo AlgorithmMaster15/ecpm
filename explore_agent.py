@@ -530,6 +530,7 @@ def run_explore_instance(inst, cfg, act_fn=None, node_policy_fn=None) -> dict:
         return episodes
 
     m0_episodes = run_phase(inst.m0, "m0", cfg.max_episodes_m0)
+    m0_message_count = len(messages)   # transcript boundary: end of M0, before the reset
 
     transition_note = ("You are placed back at the start. The network's "
                        "link reliabilities may have changed since your "
@@ -539,7 +540,7 @@ def run_explore_instance(inst, cfg, act_fn=None, node_policy_fn=None) -> dict:
                             initial_note=transition_note)
 
     return {"messages": messages, "m0_episodes": m0_episodes,
-           "m1_episodes": m1_episodes}
+           "m1_episodes": m1_episodes, "m0_message_count": m0_message_count}
 
 
 # Smoke test: builds the seed-7 silent_break instance,

@@ -83,6 +83,7 @@ import time
 import urllib.error
 from dataclasses import asdict
 
+import coherence
 import explore_agent
 import explore_metrics
 from ecpm_parser import (PARSERS, belief_self_consistency, run_probe,
@@ -522,6 +523,169 @@ def _episode_to_json(ep):
     return asdict(ep)
 
 
+def _seq(x):
+    return " ".join(x)
+
+
+def run_coherence_probes(dfa, episodes, start, checkpoint_messages,
+                         system_prompt, args, *, act_fn, get_usage,
+                         seed, phase):
+    """Compression + distinction-recall world-model coherence probes for
+    one checkpoint (end of M0 or end of M1; see coherence.py and
+    docs/coherence_probes_implementation_plan.txt). v1 scope:
+    distinction-precision is deferred, not implemented here.
+
+    dfa/episodes/start are all for THAT world alone; histories are
+    never pooled across M0/M1. checkpoint_messages is the frozen,
+    already-trimmed transcript up to this checkpoint (trim_history under
+    the same budget the live agent used), reused unmodified for every
+    query below; each (history, candidate) query is its own independent
+    fork off it, checkpoint_messages plus one restated-history-and-
+    question turn, never a growing multi-turn conversation, so one
+    candidate's answer can never bias another's.
+
+    act_fn(system, messages) -> (raw_text, reasoning): the same
+    provider-dispatching, retrying call used for the live exploration
+    steps and the four existing probes. get_usage() reads whatever usage
+    act_fn's last call recorded. Ignored (dry_run_legality_reply is used
+    directly instead) when args.provider == "dry-run".
+
+    Returns one checkpoint's artifact block: pairs (with candidates,
+    ground truth, raw answers, verdicts, scores/recall, diagnostics),
+    skip records, sampling seeds, and the parameters used: everything
+    docs/coherence_probes_implementation_plan.txt's "Reusability" section
+    asks to persist.
+    """
+    maxlen = args.coherence_maxlen
+    rng_targets = random.Random(f"pilot|{seed}|coherence-targets|{phase}")
+
+    def ask_one(q, candidate, ask_text):
+        if args.provider == "dry-run":
+            return coherence.dry_run_legality_reply(dfa, q, candidate), "", {}
+        messages = checkpoint_messages + [{"role": "user", "content": ask_text}]
+        raw, reasoning = act_fn(system_prompt, messages)
+        return raw, reasoning, get_usage()
+
+    def collect_answers(q, history, candidates):
+        """Query every candidate independently against one history.
+        Returns (verdicts, raw_by_candidate, reasoning_by_candidate,
+        usage_by_candidate); verdicts[x] is None on a missing/unparsable
+        answer."""
+        verdicts, raws, reasonings, usages = {}, {}, {}, {}
+        for x in candidates:
+            ask_text = ask_block_coherence(history, x)
+            raw, reasoning, usage = ask_one(q, x, ask_text)
+            parsed = coherence.parse_validity(raw, x)
+            verdicts[x] = parsed["valid"] if parsed["status"] == "ok" else None
+            key = _seq(x)
+            raws[key], reasonings[key], usages[key] = raw, reasoning, usage
+        return verdicts, raws, reasonings, usages
+
+    def _diag_json(diag):
+        return {
+            "accuracy_by_length": {str(k): v for k, v in
+                                   diag["accuracy_by_length"].items()},
+            "first_wrong_prefix_length":
+                {f"{_seq(t)}|{h}": v for (t, h), v in
+                 diag["first_wrong_prefix_length"].items()},
+            "first_divergent_acceptance_length":
+                {_seq(t): v for t, v in
+                 diag["first_divergent_acceptance_length"].items()},
+            "closure_violations": {
+                "s1": sorted(_seq(x) for x in diag["closure_violations"]["s1"]),
+                "s2": sorted(_seq(x) for x in diag["closure_violations"]["s2"])},
+        }
+
+    # -- compression ---------------------------------------------------
+    comp_pairs, comp_skipped = coherence.sample_compression_pairs(
+        dfa, episodes, start, seed, phase, args.coherence_max_compression_pairs)
+    compression_out = []
+    for q, s1, s2 in comp_pairs:
+        targets = coherence.sample_compression_targets(
+            q, dfa, maxlen, args.coherence_compression_n_targets, rng_targets)
+        candidates = sorted(coherence.expand_with_prefixes(targets),
+                            key=lambda x: (len(x), x))
+        truth = coherence.true_labels(candidates, dfa, q)
+        v1, raw1, reasoning1, usage1 = collect_answers(q, s1, candidates)
+        v2, raw2, reasoning2, usage2 = collect_answers(q, s2, candidates)
+        score = coherence.score_compression(targets, v1, v2)
+        diag = coherence.diagnostics_for_pair(targets, truth, truth, v1, v2)
+        compression_out.append({
+            "node": q, "s1": _seq(s1), "s2": _seq(s2),
+            "targets": [_seq(t) for t in targets],
+            "candidates": [_seq(x) for x in candidates],
+            "true_labels": {_seq(x): truth[x] for x in candidates},
+            "raw_answers": {"s1": raw1, "s2": raw2},
+            "reasoning": {"s1": reasoning1, "s2": reasoning2},
+            "provider_usage": {"s1": usage1, "s2": usage2},
+            "verdicts": {"s1": {_seq(x): v1[x] for x in candidates},
+                        "s2": {_seq(x): v2[x] for x in candidates}},
+            "score": score,
+            "diagnostics": _diag_json(diag),
+        })
+
+    # -- distinction (recall only, v1 -- see coherence.py) --------------
+    dist_pairs, dist_skipped = coherence.sample_distinction_pairs(
+        dfa, episodes, seed, phase, args.coherence_max_distinction_pairs,
+        maxlen)
+    distinction_out = []
+    for q1, s1, q2, s2, mnb_12, mnb_21 in dist_pairs:
+        twd = coherence.sample_distinction_recall_targets(
+            mnb_12, mnb_21, args.coherence_distinction_n_boundary_targets,
+            rng_targets)
+        targets = [t for t, _ in twd]
+        candidates = sorted(coherence.expand_with_prefixes(targets),
+                            key=lambda x: (len(x), x))
+        truth1 = coherence.true_labels(candidates, dfa, q1)
+        truth2 = coherence.true_labels(candidates, dfa, q2)
+        v1, raw1, reasoning1, usage1 = collect_answers(q1, s1, candidates)
+        v2, raw2, reasoning2, usage2 = collect_answers(q2, s2, candidates)
+        recall = coherence.score_distinction_recall(twd, v1, v2)
+        diag = coherence.diagnostics_for_pair(targets, truth1, truth2, v1, v2)
+        distinction_out.append({
+            "q1": q1, "q2": q2, "s1": _seq(s1), "s2": _seq(s2),
+            "targets_with_direction": [{"word": _seq(t), "direction": d}
+                                       for t, d in twd],
+            "mnb_12_size": len(mnb_12), "mnb_21_size": len(mnb_21),
+            "candidates": [_seq(x) for x in candidates],
+            "true_labels": {"q1": {_seq(x): truth1[x] for x in candidates},
+                            "q2": {_seq(x): truth2[x] for x in candidates}},
+            "raw_answers": {"s1": raw1, "s2": raw2},
+            "reasoning": {"s1": reasoning1, "s2": reasoning2},
+            "provider_usage": {"s1": usage1, "s2": usage2},
+            "verdicts": {"s1": {_seq(x): v1[x] for x in candidates},
+                        "s2": {_seq(x): v2[x] for x in candidates}},
+            "recall": recall,
+            "diagnostics": _diag_json(diag),
+        })
+
+    return {
+        "phase": phase,
+        "checkpoint_message_count": len(checkpoint_messages),
+        "sampling_seeds": {
+            "compression_pairs": f"pilot|{seed}|compression|{phase}",
+            "distinction_pairs": f"pilot|{seed}|distinction|{phase}",
+            "targets": f"pilot|{seed}|coherence-targets|{phase}"},
+        "model_config": {"provider": args.provider, "model": args.model,
+                         "max_tokens": args.max_tokens},
+        "params": {"maxlen": maxlen,
+                   "compression_n_targets":
+                       args.coherence_compression_n_targets,
+                   "distinction_n_boundary_targets":
+                       args.coherence_distinction_n_boundary_targets,
+                   "max_compression_pairs":
+                       args.coherence_max_compression_pairs,
+                   "max_distinction_pairs":
+                       args.coherence_max_distinction_pairs},
+        "compression": {"pairs": compression_out,
+                       "skipped": [{"node": n, "reason": r}
+                                   for n, r in comp_skipped]},
+        "distinction": {"pairs": distinction_out,
+                        "skipped": [{"q1": a, "q2": b, "reason": r}
+                                    for a, b, r in dist_skipped]},
+    }
+
+
 def run_pilot_active(sc, deterministic, args):
     """Active-exploration pilot: the model explores M0 then M1 itself and
     answers the 4 probes on a fork of its own transcript. The loop lives in
@@ -624,6 +788,31 @@ def run_pilot_active(sc, deterministic, args):
             "parsed": probe_result["parsed"],
             "scored": probe_result["scored"],
         }
+
+    if args.coherence and not deterministic:
+        print("  coherence: skipped (deterministic condition only: the "
+             "DFA formalism doesn't apply to stochastic worlds)")
+    elif args.coherence:
+        # v1 world-model coherence probes (compression + distinction-
+        # recall), additive: the four probes above are untouched by this.
+        m0_messages = explore_agent.trim_history(
+            result["messages"][:result["m0_message_count"]],
+            cfg.max_context_tokens_est, cfg.keep_last_n_turns_min)
+        m1_messages = explore_agent.trim_history(
+            result["messages"], cfg.max_context_tokens_est,
+            cfg.keep_last_n_turns_min)
+        dfa0 = coherence.build_dfa_view(inst.m0, inst.labels)
+        dfa1 = coherence.build_dfa_view(inst.m1, inst.labels)
+        artifact["coherence"] = {
+            "m0": run_coherence_probes(
+                dfa0, result["m0_episodes"], inst.start, m0_messages,
+                system_prompt, args, act_fn=act_fn,
+                get_usage=lambda: last_usage, seed=sc["seed"], phase="m0"),
+            "m1": run_coherence_probes(
+                dfa1, result["m1_episodes"], inst.start, m1_messages,
+                system_prompt, args, act_fn=act_fn,
+                get_usage=lambda: last_usage, seed=sc["seed"], phase="m1"),
+        }
     return artifact
 
 
@@ -697,6 +886,31 @@ def main():
                          "only: greater than 0 enables Claude Extended "
                          "Thinking with this token budget (requires "
                          "--max-tokens greater than this value)")
+    ap.add_argument("--coherence", action="store_true",
+                    help="active pilot-type only: additionally run the "
+                         "compression + distinction-recall world-model "
+                         "coherence probes (see coherence.py and "
+                         "docs/coherence_probes_implementation_plan.txt); "
+                         "v1 scope, distinction-precision deferred")
+    ap.add_argument("--coherence-maxlen", type=int, default=3,
+                    help="coherence probes only: candidate length cap")
+    ap.add_argument("--coherence-compression-n-targets", type=int,
+                    default=3,
+                    help="coherence probes only: sampled candidates per "
+                         "compression pair")
+    ap.add_argument("--coherence-distinction-n-boundary-targets", type=int,
+                    default=3,
+                    help="coherence probes only: total sampled true "
+                         "boundary words per distinction pair, across "
+                         "both directions combined (no filler)")
+    ap.add_argument("--coherence-max-compression-pairs", type=int,
+                    default=2,
+                    help="coherence probes only: compression pairs "
+                         "probed per checkpoint")
+    ap.add_argument("--coherence-max-distinction-pairs", type=int,
+                    default=2,
+                    help="coherence probes only: distinction pairs "
+                         "probed per checkpoint")
     args = ap.parse_args()
 
     if args.list_scenarios:
@@ -748,6 +962,13 @@ def main():
             print(f"{path}: pinned={art['env']['pinned_to_freeze']} "
                   f"final={mf['per_phase_score']} "
                   f"mean={mf['score_mean']}\n")
+        coh = art.get("coherence")
+        if coh:
+            for cp in ("m0", "m1"):
+                comp = coh[cp]["compression"]["pairs"]
+                dist = coh[cp]["distinction"]["pairs"]
+                print(f"  coherence[{cp}]: compression n={len(comp)} "
+                      f"distinction n={len(dist)}")
 
 
 if __name__ == "__main__":

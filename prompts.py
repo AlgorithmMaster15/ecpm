@@ -204,3 +204,37 @@ def ask_block_active(record, probe, queried):
     elif probe == "adaptation":
         ask = ask.format(start=record["start"], goal=record["goal"])
     return ask
+
+
+# --------------------------------------------------------------------
+# Coherence-probe prompts (compression + distinction-recall, v1 scope;
+# see docs/coherence_probes_implementation_plan.txt). Single-elicit only:
+# one candidate continuation per query, appended as an independent fork
+# off a frozen checkpoint transcript (run_pilot.py's run_coherence_probes),
+# never a growing multi-turn conversation, so one candidate's answer can
+# never bias another's.
+# --------------------------------------------------------------------
+
+ASK_HYPOTHETICAL_HISTORY = (
+    'Suppose you had taken exactly this sequence of actions to reach '
+    'your current position: {history}.')
+
+ASKS_COHERENCE = (
+    'Question: from where that leaves you, would the following action '
+    'sequence be legal to attempt, step by step -- every action in it '
+    'listed and attemptable at the node it is attempted from?\n'
+    '{candidate}\n'
+    'Answer with exactly one JSON object: {{"valid": true}} or '
+    '{{"valid": false}}. No other text.')
+
+
+def ask_block_coherence(history, candidate):
+    """One single-elicit coherence query: the checkpoint-anchored
+    hypothetical-history restatement, followed by the validity question
+    for one candidate continuation; never naming the node the history
+    actually leaves the model at, since inferring that is the point of
+    the probe. `history` and `candidate` are label tuples like
+    ('a1', 'a2'), rendered space-separated."""
+    hist_text = ASK_HYPOTHETICAL_HISTORY.format(history=" ".join(history))
+    cand_text = ASKS_COHERENCE.format(candidate=" ".join(candidate))
+    return hist_text + "\n" + cand_text
