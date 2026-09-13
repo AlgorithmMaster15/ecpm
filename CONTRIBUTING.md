@@ -25,6 +25,45 @@ change was not additive.
 
 Work on a branch, open a pull request, do not push to main directly.
 
+Link an issue with a closing keyword so it closes on merge: `Closes #12`,
+`Fixes #12`. See
+https://docs.github.com/articles/closing-issues-using-keywords
+
+Every pull request carries at least one label, and CI refuses one that does
+not. Most are applied automatically from the paths you changed: `env`,
+`freeze`, `arm/icl`, `arm/agentic`, `arm/finetuning`, `arm/baseline`, `docs`,
+`chore`.
+
+Four are always added by hand, because path matching cannot tell:
+
+- `needs-rerun` the change invalidates existing results. Name the affected
+  artifacts.
+- `spends-credit` it consumes API budget. Say how much.
+- `provisional` a claim without a script or a written definition behind it.
+- `blocked` waiting on someone else, named in the thread.
+
+The set lives in `.github/labels.yml` and is synced from there, so add a label
+by editing that file rather than through the web UI.
+
+## Milestones
+
+One milestone per real deadline, named for the deadline rather than for a
+phase. A milestone without a date is a label wearing a different hat.
+
+An issue belongs to a milestone only if missing that date would matter.
+Everything else stays unassigned, which keeps the milestone readable as a
+list of what genuinely has to happen by then.
+
+## Issues
+
+Open questions belong in issues, not in prose. A question recorded in a
+document is found by whoever reads that document; a question recorded as an
+issue is found by whoever is looking for work.
+
+That applies particularly to the two kinds this project keeps producing: a
+number with no script behind it, and a decision nobody has made. Both have a
+template.
+
 Before starting, and before applying any patch:
 
     git status --short
@@ -88,6 +127,21 @@ a colon, a full stop or a line break.
 
 State what is not done as explicitly as what is. The README has a section
 for it.
+
+## Formatting
+
+`.editorconfig` and `.gitattributes` handle line endings and indentation. LF
+everywhere except `.ps1`, final newline, no trailing whitespace outside
+markdown.
+
+This is not cosmetic. `test_resource_mdp.py` asserts the shipped example
+records regenerate byte-identically, so a checkout that converted them to
+CRLF fails that test for a reason nobody would guess, and a `.sh` file with
+CRLF does not execute on Linux at all.
+
+There is deliberately no line-length rule: fifteen files exceed 79 columns
+and the longest line is 166. A rule the tree breaks on the day it lands
+teaches people to switch the tool off.
 
 ## Dependencies
 

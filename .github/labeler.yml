@@ -1,0 +1,74 @@
+# Path to label, applied automatically to every pull request by
+# .github/workflows/labels.yml.
+#
+# This is deterministic matching, not judgment. It cannot know that a change
+# invalidates results or spends budget, so needs-rerun, spends-credit,
+# provisional and blocked are always applied by hand.
+
+env:
+  - changed-files:
+      - any-glob-to-any-file:
+          - resource_mdp.py
+          - ecpm_parser.py
+          - test_resource_mdp.py
+          - test_ecpm_parser.py
+
+# The frozen tree, flagged separately. A pull request carrying this label
+# needs the shipped examples to still regenerate exactly, or an explicit
+# statement that the change is additive.
+freeze:
+  - changed-files:
+      - any-glob-to-any-file:
+          - resource_mdp.py
+          - ecpm_parser.py
+          - example_deterministic_silent_break.json
+          - example_stochastic_silent_break.json
+
+arm/icl:
+  - changed-files:
+      - any-glob-to-any-file:
+          - run_pilot.py
+          - prompts.py
+          - model_clients.py
+          - test_run_pilot.py
+          - test_prompt_contract.py
+
+arm/agentic:
+  - changed-files:
+      - any-glob-to-any-file:
+          - explore_agent.py
+          - explore_metrics.py
+          - test_explore_agent.py
+
+# These paths arrive with feature/finetuning-arm-graft. Until that merges the
+# rule matches nothing, which is harmless: actions/labeler does not fail on a
+# glob with no hits.
+arm/finetuning:
+  - changed-files:
+      - any-glob-to-any-file:
+          - experiments/gen_payloads.py
+          - experiments/e1_batch.py
+          - experiments/rescore_e1.py
+          - experiments/notebooks/**
+
+arm/baseline:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ecpm_baseline.py
+          - test_ecpm_baseline.py
+          - experiments/baseline_k_sweep.py
+          - experiments/seed_eligibility.py
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - docs/**
+
+chore:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+          - .gitignore
+          - .gitattributes
+          - archive/**

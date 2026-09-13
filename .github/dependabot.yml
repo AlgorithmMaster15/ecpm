@@ -1,0 +1,16 @@
+version: 2
+
+updates:
+  # There is no Python ecosystem entry on purpose. The tree is stdlib only and
+  # CI fails if that stops being true, so there is nothing for Dependabot to
+  # update there.
+  #
+  # The workflows do pin actions, and those go stale. This is the only place
+  # the repository has dependencies at all.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci:"
+    open-pull-requests-limit: 3

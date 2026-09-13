@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Conventions and house rules
+    url: https://github.com/itu-itis25-bektes23/ecpm/blob/main/CONTRIBUTING.md
+    about: How to run the suites, what the freeze allows, how claims are stated.
+  - name: Conventions for AI coding agents
+    url: https://github.com/itu-itis25-bektes23/ecpm/blob/main/AGENTS.md
+    about: The short form, read automatically by most coding agents.

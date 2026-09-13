@@ -1,0 +1,32 @@
+# Keeps editors from fighting the .gitattributes rules before git sees the
+# file. The CRLF warnings during the September integration came from exactly
+# this gap.
+
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+
+[*.py]
+indent_style = space
+indent_size = 4
+# No max_line_length. Most of the tree is 79, but 15 files exceed it and the
+# longest line is 166. A rule the tree breaks on the day it lands teaches
+# people to switch the tool off. Reinstate it after a reflow, not before.
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Two trailing spaces are a hard line break in markdown.
+trim_trailing_whitespace = false
+
+[*.ps1]
+end_of_line = crlf
+
+[Makefile]
+indent_style = tab

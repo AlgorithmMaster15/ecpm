@@ -1,2 +1,29 @@
-*.py text eol=lf
-*.md text eol=lf
+# Text files are LF in the repository and LF in the working tree, on every
+# platform. Not cosmetic: test_resource_mdp.py asserts the shipped example
+# records regenerate byte-identically, and a checkout that converted them to
+# CRLF fails that test for a reason nobody would guess. A .sh file with CRLF
+# does not execute on Linux at all.
+
+*.py    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+*.cff   text eol=lf
+*.svg   text eol=lf
+*.txt   text eol=lf
+*.patch text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+LICENSE        text eol=lf
+
+# PowerShell is the exception: Windows tooling expects CRLF.
+*.ps1   text eol=crlf
+
+# Notebooks are JSON but diff badly; mark them so git does not try.
+*.ipynb text eol=lf linguist-documentation
+
+# Binary, never touched.
+*.docx  binary
+*.png   binary

@@ -17,3 +17,7 @@ output/
 .env
 
 patches/
+
+# Resume markers written by the run loops. Scratch state, not results.
+.done
+**/.done

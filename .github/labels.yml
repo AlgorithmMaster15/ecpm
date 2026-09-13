@@ -1,0 +1,75 @@
+# The label set, in git rather than clicked into the web UI, so it can be
+# reviewed and reverted. Synced by .github/workflows/labels.yml on push to
+# main.
+#
+# GitHub's ten defaults are replaced. Four of them do not apply to a closed
+# four-person research project: accessibility, good first issue, help wanted,
+# and enhancement. The rest are kept where they earn their place.
+
+# ---------------------------------------------------------------- what it is
+- name: bug
+  color: d73a4a
+  description: Something behaves wrongly
+
+- name: docs
+  color: 0075ca
+  description: README, guides, diagrams, commit and prose conventions
+
+- name: question
+  color: d876e3
+  description: A claim, number or decision that needs settling
+
+- name: chore
+  color: cfd3d7
+  description: Structure, tooling, CI, hygiene. No behaviour change
+
+# ------------------------------------------------------------- which arm
+- name: arm/icl
+  color: 1d76db
+  description: In-context arm, run_pilot and the prompt layer
+
+- name: arm/agentic
+  color: 1d76db
+  description: Agentic exploration arm
+
+- name: arm/finetuning
+  color: 1d76db
+  description: In-context versus finetuning comparison
+
+- name: arm/baseline
+  color: 1d76db
+  description: Evidence-only null model and the ceiling tables
+
+- name: env
+  color: 1d76db
+  description: Generator, parser, scoring. The frozen tree
+
+# --------------------------------------------------- what it costs or risks
+- name: freeze
+  color: b60205
+  description: Touches the frozen tree. Must be additive, examples must still regenerate
+
+- name: needs-rerun
+  color: e99695
+  description: Invalidates existing results. Affected artifacts must be regenerated
+
+- name: spends-credit
+  color: fbca04
+  description: Consumes API budget. Say how much before merging
+
+# ------------------------------------------------------------------ status
+- name: provisional
+  color: fef2c0
+  description: A claim without a script or a written definition behind it yet
+
+- name: blocked
+  color: 5319e7
+  description: Waiting on someone else, named in the thread
+
+- name: duplicate
+  color: cfd3d7
+  description: Already exists elsewhere
+
+- name: wontfix
+  color: ffffff
+  description: Deliberately not doing this, with the reason recorded

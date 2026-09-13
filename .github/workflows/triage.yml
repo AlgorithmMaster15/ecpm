@@ -1,0 +1,30 @@
+name: triage
+
+# Adds new issues and pull requests to the project board.
+#
+# Disabled until PROJECT_URL is set, because a workflow that fails on every
+# issue is worse than no workflow. To switch it on, create the project, then
+# set the repository variable:
+#
+#   Settings, Secrets and variables, Actions, Variables, New
+#   name  PROJECT_URL
+#   value https://github.com/users/itu-itis25-bektes23/projects/N
+#
+# The token needs project scope, so a classic PAT stored as ADD_TO_PROJECT_PAT
+# is required. The default GITHUB_TOKEN cannot write to user-level projects.
+
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened]
+
+jobs:
+  add:
+    if: vars.PROJECT_URL != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/add-to-project@v1
+        with:
+          project-url: ${{ vars.PROJECT_URL }}
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}

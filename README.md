@@ -134,6 +134,11 @@ flowchart TD
 - `docs/` interface contract, paper spine, seed criteria, diagrams, figures
 - `CONTRIBUTING.md` the freeze rule, test conventions, writing rules
 - `AGENTS.md` the same conventions in short form, for AI coding agents
+- `CODE_OF_CONDUCT.md` how evidence and each other's work are handled
+- `SECURITY.md` credential leaks and evaluator leaks, and what is switched on
+- `.github/` CI, code scanning, label rules, issue and pull request templates
+- `.editorconfig`, `.gitattributes` line endings and indentation, enforced
+  before git sees the file
 - `archive/` freeze sign-off tooling, kept for provenance, not maintained
 - `runs/` artifacts, one directory per run
 - `experiments/exploratory/` prompt-safe packets, oracle packets, probability
@@ -329,6 +334,21 @@ Stated explicitly rather than left implicit.
 MIT, see `LICENSE`. Conventions are in `CONTRIBUTING.md`, and the same rules
 in short form for AI coding agents are in `AGENTS.md`. CI runs the six suites
 and the dry-run pilots on every pull request.
+
+`CODE_OF_CONDUCT.md` covers how evidence and each other's work are handled.
+`SECURITY.md` covers credential leaks and evaluator leaks, which are the two
+risks this repository actually has.
+
+Four workflows run in `.github/workflows/`: `tests.yml` runs the six suites,
+the dry-run pilots and a link check; `codeql.yml` is code scanning;
+`labels.yml` syncs the label set from `.github/labels.yml`, applies
+path-based labels from `.github/labeler.yml`, and refuses an unlabelled pull
+request; `triage.yml` adds new issues to a project board and is inert until
+one exists.
+
+Opening an issue or a pull request gives you a template. The pull request
+checklist is the conventions that have actually been broken here, not a
+generic list.
 
 ## Write-up
 

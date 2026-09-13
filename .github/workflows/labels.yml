@@ -1,0 +1,119 @@
+name: labels
+
+# Three jobs. Sync keeps the label set in git rather than in the web UI.
+# Apply adds path-based labels to every pull request. Require refuses a pull
+# request that carries none, so nothing merges unlabelled.
+#
+# Path matching is deterministic, not judgment. It cannot tell that a change
+# invalidates results or spends budget, so needs-rerun, spends-credit,
+# provisional and blocked are always added by a person.
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/labels.yml"]
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  sync:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Done with the gh CLI rather than a third-party action. The sync needs
+      # issues: write, and SECURITY.md in this same repository asks people to
+      # report credential exposure, so running an unpinned third-party action
+      # with write scope would be inconsistent. gh is preinstalled on the
+      # runner and uses the job's own token.
+      #
+      # Labels absent from the manifest are deleted, so the file is the whole
+      # truth rather than an additive list.
+      - name: Sync labels from the manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY' > /tmp/wanted.txt
+          import re
+          s = open(".github/labels.yml").read()
+          for block in s.split("- name: ")[1:]:
+              lines = block.splitlines()
+              name = lines[0].strip()
+              colour = next((l.split(":", 1)[1].strip()
+                             for l in lines if l.strip().startswith("color:")), "cccccc")
+              desc = next((l.split(":", 1)[1].strip()
+                           for l in lines if l.strip().startswith("description:")), "")
+              print(f"{name}\t{colour}\t{desc}")
+          PY
+
+          while IFS=$'\t' read -r name colour desc; do
+            [ -z "$name" ] && continue
+            if gh label list --limit 200 --json name --jq '.[].name' | grep -qxF "$name"; then
+              gh label edit "$name" --color "$colour" --description "$desc"
+            else
+              gh label create "$name" --color "$colour" --description "$desc"
+            fi
+          done < /tmp/wanted.txt
+
+          # Prune anything not in the manifest.
+          cut -f1 /tmp/wanted.txt | sort > /tmp/keep.txt
+          gh label list --limit 200 --json name --jq '.[].name' | sort > /tmp/have.txt
+          comm -13 /tmp/keep.txt /tmp/have.txt | while read -r stale; do
+            [ -n "$stale" ] && gh label delete "$stale" --yes
+          done
+
+  apply:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          configuration-path: .github/labeler.yml
+          sync-labels: true
+
+  require:
+    if: github.event_name == 'pull_request_target'
+    needs: apply
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Refuse an unlabelled pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            const labels = pr.labels.map(l => l.name);
+            if (labels.length === 0) {
+              core.setFailed(
+                "No label. Path matching adds env, freeze, arm/*, docs and " +
+                "chore automatically; if none applied, the change is one " +
+                "the rules do not cover and needs a label by hand. See " +
+                ".github/labels.yml.");
+              return;
+            }
+            core.info("labels: " + labels.join(", "));
+
+            // A freeze change has a specific obligation, so say so on the
+            // pull request rather than hoping the author remembers.
+            if (labels.includes("freeze")) {
+              core.warning(
+                "This touches the frozen tree. The shipped examples must " +
+                "still regenerate exactly, or the description must say why " +
+                "the change is additive.");
+            }
+            if (labels.includes("needs-rerun")) {
+              core.warning(
+                "This invalidates existing results. Name the affected " +
+                "artifacts in the description.");
+            }

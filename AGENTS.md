@@ -67,3 +67,12 @@ still reporting success.
 
 Commit messages say what changed, why it was wrong, and how it was verified.
 Describe the artifact, not the intent behind it.
+
+Opening a pull request gives you a template; fill in the sections rather than
+deleting them. Issues have templates too, one for a bug and one for a claim or
+decision that needs settling.
+
+Every pull request needs at least one label or CI fails it. Path-based ones
+(`env`, `freeze`, `arm/*`, `docs`, `chore`) are applied automatically. Add
+`needs-rerun`, `spends-credit`, `provisional` or `blocked` yourself when they
+apply: no rule can infer those. The set is `.github/labels.yml`.
