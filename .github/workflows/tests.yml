@@ -24,6 +24,11 @@ permissions:
 
 jobs:
   suites:
+    # Explicit name so the reported check is stable. GitHub names a
+    # check after the job, and with a matrix it becomes 'suites (3.11)'.
+    # A ruleset requiring 'tests' would wait forever for a check that
+    # nothing reports.
+    name: tests ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

@@ -94,8 +94,25 @@ by commit SHA, so a tag could be moved under us. Pinning by SHA is correct and
 Dependabot maintains SHA pins, but it is a mechanical change worth doing in
 one pass rather than piecemeal.
 
-**Does not apply.** Fuzzing: there is no parser or protocol surface taking
-untrusted input. Code-Review: the project pushes to `main` by design at this
+**Addressed differently.** Fuzzing. The check asks for OSS-Fuzz or
+ClusterFuzzLite, which is heavy for a repository this size, but the concern
+behind it is real: `ecpm_parser.py` reads model output, which is
+unconstrained text, and a crash there loses an instance where a wrong answer
+would merely score badly.
+
+`test_ecpm_parser.py` now fuzzes all four probes with 2,400 seeded replies
+per run, half random bytes and half structurally valid JSON of the wrong
+shape, and requires every one to return a status rather than raise. Seeded,
+so a failure reproduces. Verified by injecting a defect into `run_probe` and
+confirming the test fails.
+
+The Scorecard alert will stay open, because it looks for a specific
+integration rather than for the property. That is a reasonable thing to
+leave open with a written reason.
+
+**Does not apply.** Maintained: the check measures commit frequency over a
+90-day window and this repository is younger than that. It resolves with
+time, not with a change. Code-Review: the project pushes to `main` by design at this
 stage, which the Branch-Protection item above would change if the group wants
 it. Packaging and Signed-Releases: nothing is released.
 
