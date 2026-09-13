@@ -47,6 +47,16 @@ costing more than expected. Those are issues or pull requests.
 | Dependabot | actions only | `.github/dependabot.yml`. The tree is stdlib only, so the workflows are the only dependencies |
 | Private vulnerability reporting | see below | |
 
+`.github/workflows/` carries eight workflows and no more. Scanners for
+languages and artifacts this repository does not contain were deleted rather
+than disabled: there is no Ruby, PHP, Java, Rust, Kotlin, Clojure, Elixir, R,
+Terraform, Kubernetes manifest, Dockerfile, container, mobile app or deployed
+service here. Neither were the ones needing a paid account kept, because a
+scanner that fails on every push teaches people to ignore the Actions tab.
+
+Adding one back is deliberate work, not a default. If a tool is worth running
+it is worth a commit explaining what it covers that codeql and bandit do not.
+
 Private vulnerability reporting is a repository setting rather than a file. If
 it is enabled, use it in preference to email, because it opens a private
 thread on the repository instead of relying on one inbox. If it is not, email
