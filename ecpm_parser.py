@@ -77,6 +77,10 @@ def extract_json_object(text):
                         if isinstance(obj, dict):
                             return obj
                     except json.JSONDecodeError:
+                        # This slice is not a JSON object. The break below
+                        # moves to the next candidate opening brace; a model
+                        # wrapping its answer in prose is the normal case,
+                        # not an error.
                         pass
                     break
         i = text.find("{", i + 1)

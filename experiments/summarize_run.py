@@ -36,8 +36,13 @@ def load(root):
         if os.path.basename(path) == "summary.json":
             continue
         try:
-            d = json.load(open(path))
-        except Exception:
+            with open(path, encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            # Not every JSON file under a run directory is an artifact.
+            # UnicodeDecodeError is listed explicitly: it is a ValueError,
+            # not an OSError, so a file written in UTF-16 would otherwise
+            # crash the summariser rather than be skipped.
             continue
         if "probes" not in d or "scenario" not in d:
             continue

@@ -23,7 +23,6 @@ import argparse
 import json
 import re
 import subprocess
-import sys
 
 from ecpm_parser import run_probe
 from resource_mdp import make_pair, pair_to_json, paired_evidence, prompt_view
@@ -31,6 +30,14 @@ from resource_mdp import make_pair, pair_to_json, paired_evidence, prompt_view
 FROZEN = "5318c3e113438c563c5676d58252d84fda22aa49"
 SEED = 7
 
+
+def _load_json(path):
+    """Read a JSON file and close it.
+
+    json.load(open(path)) leaves the handle to the garbage collector, which
+    leaks descriptors when called in a loop over run artifacts."""
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
 
 def build(mode):
     inst = make_pair(SEED, "silent_break",
@@ -76,7 +83,7 @@ def main():
     tp = {"pre": true_p(rec, "pre"), "post": true_p(rec, "post")}
     vr = {"pre": visible_rates(view, "pre"),
           "post": visible_rates(view, "post")}
-    resp = json.load(open(args.response))
+    resp = _load_json(args.response)
 
     # ---- probability half: coverage, then error ------------------------
     report = {"mode": args.mode, "frozen": head == FROZEN}
@@ -135,7 +142,8 @@ def main():
 
     print(json.dumps(report, indent=2))
     if args.out:
-        json.dump(report, open(args.out, "w"), indent=2)
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2)
 
 
 if __name__ == "__main__":

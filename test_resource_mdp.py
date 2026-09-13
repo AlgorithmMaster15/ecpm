@@ -20,9 +20,9 @@ import json
 import random
 import resource_mdp as R
 
-from resource_mdp import (CONDITIONS, RoutingMDP, assign_labels,
+from resource_mdp import (CONDITIONS, RoutingMDP,
                           breakable_route_links, broken_link_usage,
-                          collect_balanced, edges_off_all_optimal_routes,
+                          edges_off_all_optimal_routes,
                           fixed_policy, legal_actions, make_pair,
                           optimal_policy, pair_to_json, paired_evidence,
                           prompt_view, rollout, route_from_actions,
@@ -39,6 +39,8 @@ def eligible_seeds(n_wanted=6, det=False):
             make_pair(s, "silent_break", deterministic=det)
             out.append(s)
         except ValueError:
+            # Ineligible seed, skip it. Not `continue`: the increment below
+            # is inside this loop and skipping it would hang.
             pass
         s += 1
     assert len(out) == n_wanted, "could not find enough eligible seeds"
@@ -431,6 +433,8 @@ def test_v211_matched_mode():
             assert di.change["edge"] == si.change["edge"], \
                 "matched irrelevant target"
         except ValueError:
+            # A seed that cannot build this condition is skipped, not
+            # counted against the invariant below.
             pass
     assert eligible >= 10, f"matched yield too low in 40 seeds ({eligible})"
     # matched records rebuild and project cleanly
@@ -450,7 +454,8 @@ def test_v21_examples_in_sync():
                       (False, "example_stochastic_silent_break.json")):
         if not os.path.exists(name):
             continue
-        rec = json.load(open(name))
+        with open(name, encoding="utf-8") as fh:
+            rec = json.load(fh)
         inst = make_pair(7, "silent_break", deterministic=det,
                          matched=rec["params"].get("matched", False))
         ev = paired_evidence(inst, k=rec["evidence"]["k_per_pair"],

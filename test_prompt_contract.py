@@ -20,7 +20,6 @@ regression into a loud one.
 Run: python3 test_prompt_contract.py
 """
 
-import sys
 
 # The legacy asks live in run_pilot.py today and in prompts.py after the
 # extraction in PR #5. Accept either, and fail only if neither can be found.
@@ -34,6 +33,8 @@ except (ImportError, AttributeError):
         import run_pilot as _r
         ASKS, ASKS_ACTIVE, _source = _r.ASKS, _r.ASKS_ACTIVE, "run_pilot.py"
     except (ImportError, AttributeError):
+        # Neither location has them. test_asks_are_reachable reports that
+        # with a useful message, so staying quiet here is correct.
         pass
 
 # Both phrasings were read by models as an instruction to append a step at

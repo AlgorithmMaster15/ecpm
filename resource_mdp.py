@@ -85,7 +85,7 @@ import json
 import random
 import string
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 INF = float("inf")
 
