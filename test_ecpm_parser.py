@@ -12,9 +12,11 @@ Covers:
 """
 
 import json
+import random
+import string
 
 from ecpm_parser import (PARSERS, run_probe)
-from resource_mdp import make_pair, pair_to_json
+from resource_mdp import make_pair, pair_to_json, paired_evidence
 
 
 def record_for(condition, deterministic=True):
@@ -149,7 +151,7 @@ def test_v22_turn1_probes():
     """belief parse/score, route_pre on the PRE world, self-consistency."""
     from ecpm_parser import (belief_self_consistency, parse_belief,
                              score_belief, score_route_pre)
-    from resource_mdp import make_pair, pair_to_json, paired_evidence
+    from resource_mdp import make_pair, pair_to_json, paired_evidence, paired_evidence
     inst = make_pair(7, "silent_break", matched=True)
     rec = json.loads(json.dumps(pair_to_json(inst, paired_evidence(inst))))
     ch = rec["change"]
@@ -195,9 +197,69 @@ def test_v22_turn1_probes():
           "route_pre on M0, self-consistency preservation")
 
 
+def test_parser_never_raises_on_arbitrary_input():
+    """Every probe returns a status for any input, and never raises.
+
+    The parser reads model output, which is unconstrained text. A crash
+    there is worse than a wrong answer: a wrong answer scores, a crash
+    loses the instance and, in a sweep, the run. This is the concern behind
+    Scorecard's Fuzzing check, which asks for OSS-Fuzz integration. The
+    property it protects is testable directly and deterministically, which
+    suits a repository this size better.
+
+    Seeded, so a failure is reproducible rather than a flake.
+    """
+    rng = random.Random(20260913)
+    inst = make_pair(7, "silent_break", deterministic=True, matched=True)
+    rec = json.loads(json.dumps(pair_to_json(inst, paired_evidence(inst, k=5))))
+    queried = [{"node": e["from"], "action": e["action"]}
+               for e in rec["world_pre"]["edges"][:4]]
+    probes = ("detection", "localization", "preservation", "adaptation")
+
+    pool = string.printable + '{}[]":,\n'
+
+    def random_text():
+        return "".join(rng.choice(pool) for _ in range(rng.randint(0, 140)))
+
+    # Structurally valid JSON of the wrong shape: where a parser is likelier
+    # to break than on noise, because it gets far enough in to index.
+    shapes = [None, True, False, 0, -1, 1.5, 1e308, "", "a1", "ZZ", [], {},
+              [[]], {"x": {}}, {"node": None}, [{"node": "A"}], "\x00", "cafe",
+              {"route": None}, {"route": [[]]}, {"route": [{"node": "A"}]},
+              {"changed": "yes"}, {"pairs": [{"node": 1}]},
+              {"node": "A", "action": 7},
+              {"route": [{"node": "A", "action": "a1"}] * 400}]
+    keys = ["node", "action", "changed", "pairs", "route", "x"]
+
+    checked = 0
+    for probe in probes:
+        for i in range(600):
+            if i % 3 == 0:
+                reply = random_text()
+            else:
+                value = rng.choice(shapes)
+                if rng.random() < 0.5:
+                    value = {rng.choice(keys): rng.choice(shapes)}
+                reply = json.dumps(value)
+            try:
+                out = run_probe(rec, probe, reply, queried_pairs=queried)
+            except Exception as exc:               # noqa: BLE001
+                raise AssertionError(
+                    f"{probe} raised {type(exc).__name__} on {reply!r:.120}"
+                ) from exc
+            assert "scored" in out and "status" in out["scored"], \
+                f"{probe} returned no status for {reply!r:.120}"
+            checked += 1
+
+    assert checked == len(probes) * 600
+    print(f"PASS fuzz: {checked} arbitrary replies, every probe returned a "
+          f"status, none raised")
+
+
 if __name__ == "__main__":
     test_format_fixtures()
     test_adaptation_scoring()
     test_other_probes()
     test_v22_turn1_probes()
+    test_parser_never_raises_on_arbitrary_input()
     print("\nALL PARSER TESTS PASSED")
