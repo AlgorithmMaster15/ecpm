@@ -57,6 +57,22 @@ scanner that fails on every push teaches people to ignore the Actions tab.
 Adding one back is deliberate work, not a default. If a tool is worth running
 it is worth a commit explaining what it covers that codeql and bandit do not.
 
+## Bandit
+
+Configured by `.bandit` at the repository root. Untuned it reports 413
+findings, 378 of them `assert_used` in the test suites, which is the tool not
+knowing which files are tests rather than a finding. Tuned, it reports 12.
+
+Every skip has a written reason in that file, and three checks are
+deliberately left visible: `B310` on the eight `urlopen` call sites that build
+URLs from `--azure-endpoint` and `--base-url`, plus `B112` and `B104`. Those
+are benign while the user is the operator, and they are exactly where it would
+matter if that ever stopped being true.
+
+`devskim` was removed. It reported 185 findings on a Python tree and is aimed
+at C and C++ idioms; keeping it was an error in the earlier prune, which had
+already classified it as not applicable before keeping it anyway.
+
 ## Scorecard findings
 
 `scorecard.yml` rates this repository against OSSF supply-chain criteria

@@ -36,10 +36,12 @@ jobs:
 
       # archive/ holds superseded tooling that is not maintained, so it is
       # excluded rather than producing findings nobody will act on.
+      # Exclusions and skips live in .bandit at the repository root, with a
+      # written reason for each. Keeping them there rather than on this
+      # command line means the same run happens locally.
       - name: Run bandit
         run: |
           bandit -r . \
-            --exclude ./archive,./.git \
             --format sarif \
             --output bandit.sarif \
             --exit-zero
