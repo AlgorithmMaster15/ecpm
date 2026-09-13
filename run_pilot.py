@@ -535,6 +535,8 @@ def with_retry(fn, *args, max_attempts=6, base_delay=1.0, max_delay=30.0,
     raises immediately. Stdlib only -- reimplements the retry pattern seen
     in reference material, no third-party dependency added, matching this
     repo's stdlib-only convention."""
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be at least 1, got {max_attempts}")
     last_exc = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -556,9 +558,10 @@ def with_retry(fn, *args, max_attempts=6, base_delay=1.0, max_delay=30.0,
         print(f"retryable error (attempt {attempt}/{max_attempts}), "
               f"retrying in {delay:.1f}s: {last_exc}")
         time.sleep(delay)
-    # Unreachable: the final attempt raises above. Present so every path out
-    # of this function is explicit rather than an implicit None.
-    raise last_exc
+    # Unreachable: max_attempts >= 1 is checked above and the final attempt
+    # raises. Not `raise last_exc`, which would raise None if it ever were
+    # reached; an AssertionError names the broken invariant instead.
+    raise AssertionError("with_retry fell through its loop")
 
 
 def dry_run_answer(record, probe, queried):
