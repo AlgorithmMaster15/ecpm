@@ -29,7 +29,6 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ecpm_parser import extract_json_object  # noqa: F401  (kept for parity/reference; step-level parsing uses extract_last_json_object below)
 from resource_mdp import (PolicyAborted, explore_policy, invert_labels,
                           legal_actions, rollout)
 
@@ -109,6 +108,11 @@ def extract_last_json_object(text) -> dict | None:
     one that parses successfully into a dict.
     This matches a "reason, then answer" convention where the model
     may think in prose before committing to a final action.
+
+    Deliberately the LAST object, where ecpm_parser.extract_json_object
+    takes the FIRST. A step reply may quote the previous one, so the most
+    recent is the model's actual choice. test_explore_agent.py checks both
+    against the same text.
 
     Args:
         text: Raw model output to scan. Non-string input returns None.
@@ -363,8 +367,9 @@ def _build_recording_policy(mdp, labels, cfg, messages, step_meta, *,
             trimmed = trim_history(messages, cfg.max_context_tokens_est,
                                    cfg.keep_last_n_turns_min)
             retries = 0
-            parsed = {"status": "malformed_json"}
-            raw, reasoning = "", ""
+            # No pre-initialisation of parsed/raw/reasoning: the loop body
+            # assigns all three before any use, and `while True` always runs
+            # at least once. Seeding them first only hid that.
             while True:
                 raw, reasoning = act_fn(system_prompt, trimmed)
                 parsed = parse_step_action(raw, menu)

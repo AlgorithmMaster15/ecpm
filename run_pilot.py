@@ -556,6 +556,9 @@ def with_retry(fn, *args, max_attempts=6, base_delay=1.0, max_delay=30.0,
         print(f"retryable error (attempt {attempt}/{max_attempts}), "
               f"retrying in {delay:.1f}s: {last_exc}")
         time.sleep(delay)
+    # Unreachable: the final attempt raises above. Present so every path out
+    # of this function is explicit rather than an implicit None.
+    raise last_exc
 
 
 def dry_run_answer(record, probe, queried):
@@ -890,6 +893,13 @@ def _call_icl_provider_once(args, messages, sampling, reasoning):
         reasoning_text = [block for block in data["content"]
                           if block.get("type") == "thinking"] or None
         finish = data.get("stop_reason")
+    else:
+        # Unreachable while argparse restricts --provider, and that is the
+        # point: a fifth provider should fail here, naming itself, rather
+        # than leaving text and finish unbound for a later line to trip on.
+        raise ValueError(
+            f"_call_icl_provider_once has no branch for provider "
+            f"{args.provider!r}")
     evidence = _reasoning_evidence(args.provider, data, reasoning_text)
     return {"text": text, "usage": data.get("usage", {}),
             "finish_reason": finish,

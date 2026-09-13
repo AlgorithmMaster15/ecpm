@@ -167,9 +167,11 @@ def test_five_pairs_stable_and_no_change_counterfactual():
     sc, record, _ = record_and_view()
     expected = queried_pairs_for_icl(record, sc)
     assert len(expected) == 5
-    for _repeat in range(3):
-        for _level in ICL_LEVELS:
-            assert queried_pairs_for_icl(record, sc) == expected
+    # Selection is level-independent by construction: queried_pairs_for_icl
+    # takes (record, sc) and no level. Repeating it checks determinism, which
+    # is the part that could regress if hidden state crept in.
+    for _ in range(3):
+        assert queried_pairs_for_icl(record, sc) == expected
     target = protocol_target_pair(record, sc)
     assert sum((q["node"], q["action"]) == target for q in expected) == 1
 
@@ -641,12 +643,14 @@ def test_two_calls_persistence_hashes_and_safe_resume():
             assert summary["any_response_truncated"] is True
             assert summary["operational_gate_pass"] is False
             assert call_count == 2
+            calls_before_resume = call_count
             with open(path, "rb") as fh:
                 before = fh.read()
             _, _, skipped = run_icl_two_response_once(
                 record, view, sc, True, args(), "empirical_table", 1, 0,
                 outdir)
-            assert skipped and call_count == 2
+            assert skipped and call_count == calls_before_resume, \
+                "a resumed cell must not issue another request"
             with open(path, "rb") as fh:
                 assert fh.read() == before
 

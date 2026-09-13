@@ -158,7 +158,6 @@ def test_v22_turn1_probes():
                  for e in rec["world_pre"]["edges"]
                  if (e["from"], e["action"]) != (tgt["node"], tgt["action"]))
     q = [tgt, other]
-    truth = {(e["from"], e["action"]): e for e in rec["world_pre"]["edges"]}
     def b(pair, p_off=0.0, period="pre"):
         e = {(x["from"], x["action"]): x
              for x in rec[f"world_{period}"]["edges"]}[(pair["node"],
