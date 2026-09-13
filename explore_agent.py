@@ -87,6 +87,20 @@ class ExploreConfig:
 # --------------------------------------------------------------------------
 
 
+def _json_object_or_none(text):
+    """Parse `text` as a JSON object, or return None.
+
+    Keeps the callers below free of an empty except: a slice that is not a
+    JSON object is an answer, not an error. Models wrapping their reply in
+    prose is the normal case.
+    """
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
 def extract_last_json_object(text) -> dict | None:
     """Extract the last valid JSON object from free-form text.
 
@@ -125,12 +139,9 @@ def extract_last_json_object(text) -> dict | None:
             elif c == "}":
                 depth -= 1
                 if depth == 0:
-                    try:
-                        obj = json.loads(text[i:j + 1])
-                        if isinstance(obj, dict):
-                            found = obj
-                    except json.JSONDecodeError:
-                        pass
+                    obj = _json_object_or_none(text[i:j + 1])
+                    if obj is not None:
+                        found = obj
                     break
         i = text.find("{", i + 1)
     return found

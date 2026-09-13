@@ -33,9 +33,10 @@ except (ImportError, AttributeError):
         import run_pilot as _r
         ASKS, ASKS_ACTIVE, _source = _r.ASKS, _r.ASKS_ACTIVE, "run_pilot.py"
     except (ImportError, AttributeError):
-        # Neither location has them. test_asks_are_reachable reports that
-        # with a useful message, so staying quiet here is correct.
-        pass
+        # Neither location has them. Leave the names unset rather than
+        # guessing; test_asks_are_reachable reports that with a useful
+        # message.
+        ASKS = ASKS_ACTIVE = _source = None
 
 # Both phrasings were read by models as an instruction to append a step at
 # the goal node. The first is the original legacy wording; the second is the

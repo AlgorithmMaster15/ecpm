@@ -92,8 +92,11 @@ from ecpm_parser import (PARSERS, belief_self_consistency,
                          score_control_preservation, score_icl_beliefs,
                          score_icl_localization, score_adaptation,
                          score_route_pre)
-from model_clients import *
-from prompts import *
+from model_clients import (TransientLLMError, call_anthropic,
+                           call_anthropic_chat, call_azure, call_azure_chat,
+                           call_openai, call_openai_chat)
+from prompts import (ASKS_ACTIVE, ask_block, context_block, context_block_a,
+                     reveal_block_b)
 from resource_mdp import (CONDITIONS, PROMPT_RENDERINGS, SCHEMA_VERSION,
                           make_pair, pair_to_json, paired_evidence,
                           prompt_view)
@@ -632,6 +635,20 @@ def _canonical_sha256(value):
 def _utc_now():
     return datetime.datetime.now(
         datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _read_json_or_none(path):
+    """Read a JSON file, or return None if it is missing or unreadable.
+
+    Used to decide whether summary.json already holds what we are about to
+    write. An unreadable file is an answer (rewrite it), not an error, which
+    is why the handler returns rather than passing.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
 
 
 def _write_json_atomic(path, value):
@@ -1203,13 +1220,7 @@ def write_icl_summary(outdir, results):
         completed == expected and complete_matrix
         and all(row["operational_pass"] for row in rows))
     path = os.path.join(outdir, "summary.json")
-    existing = None
-    if os.path.exists(path):
-        try:
-            with open(path) as fh:
-                existing = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            pass
+    existing = _read_json_or_none(path)
     if existing != summary:
         _write_json_atomic(path, summary)
     return summary, path

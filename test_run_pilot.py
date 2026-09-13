@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import run_pilot
 from ecpm_parser import (diagnose_route_beliefs, parse_icl_turn_a,
@@ -450,7 +451,7 @@ def test_provider_sampling_and_reasoning_controls():
     def fake_urlopen(request, timeout):
         body = json.loads(request.data)
         captured.append(body)
-        if "anthropic.com" in request.full_url:
+        if urlparse(request.full_url).hostname == "api.anthropic.com":
             return FakeResponse({"content": [{"type": "text", "text": "{}"}],
                                  "stop_reason": "end_turn", "usage": {}})
         return FakeResponse({"choices": [{"message": {"content": "{}"},
@@ -515,9 +516,11 @@ def test_provider_sampling_and_reasoning_controls():
         setattr(invalid, field, value)
         try:
             sampling_seed_provenance(invalid, 0)
+        except ValueError as exc:
+            assert field in str(exc) or "invalid" in str(exc).lower(), \
+                f"wrong error for an invalid {field}: {exc}"
+        else:
             raise AssertionError(f"invalid {field} must be rejected")
-        except ValueError:
-            pass
     assert _reasoning_evidence("openai", {"usage": {
         "completion_tokens_details": {"reasoning_tokens": 0}}}, None) == \
         "false"

@@ -134,9 +134,11 @@ def test_other_probes():
         "incomplete_response"
     try:
         run_probe(rec, "preservation", full)
+    except ValueError as exc:
+        assert "queried_pairs" in str(exc), \
+            f"wrong error for a missing queried_pairs: {exc}"
+    else:
         raise AssertionError("queried_pairs must be required")
-    except ValueError:
-        pass
     print("PASS detection / localization ground truth; preservation "
           "strict: exact cover required, duplicates/unknown/missing "
           "rejected")

@@ -31,17 +31,40 @@ from resource_mdp import (CONDITIONS, RoutingMDP,
 INF = float("inf")
 
 
+def matched_irrelevant(seed):
+    """The det/sto irrelevant pair for a seed, or None if it cannot build.
+
+    Returning None keeps the caller free of an empty except: a seed that
+    cannot build this condition is skipped, not counted against the
+    invariant.
+    """
+    try:
+        return (make_pair(seed, "irrelevant", deterministic=True,
+                          matched=True),
+                make_pair(seed, "irrelevant", deterministic=False,
+                          matched=True))
+    except ValueError:
+        return None
+
+
 def eligible_seeds(n_wanted=6, det=False):
     """First seeds that admit an eligible (reachability-preserving) break."""
     out, s = [], 0
-    while len(out) < n_wanted and s < 200:
+    def buildable(seed):
+        """True when this seed admits an eligible break.
+
+        Eligibility is a property of the graph, so a ValueError here is an
+        answer rather than a failure.
+        """
         try:
-            make_pair(s, "silent_break", deterministic=det)
-            out.append(s)
+            make_pair(seed, "silent_break", deterministic=det)
         except ValueError:
-            # Ineligible seed, skip it. Not `continue`: the increment below
-            # is inside this loop and skipping it would hang.
-            pass
+            return False
+        return True
+
+    while len(out) < n_wanted and s < 200:
+        if buildable(s):
+            out.append(s)
         s += 1
     assert len(out) == n_wanted, "could not find enough eligible seeds"
     return out
@@ -391,9 +414,11 @@ def test_v21_prompt_view():
         "budget=None reproduces the stored rendering"
     try:
         prompt_view(record, rendering="F3_stats", budget_per_pair=5)
+    except ValueError as exc:
+        assert "0 < B <= k" in str(exc), \
+            f"wrong error for a budget above k: {exc}"
+    else:
         raise AssertionError("B > k must be rejected")
-    except ValueError:
-        pass
     one = prompt_view(record, rendering="F2_shuffled", periods=("post",),
                       budget_per_pair=4)
     assert "legal_actions_pre" not in one and "pre" not in one["evidence"]
@@ -424,18 +449,12 @@ def test_v211_matched_mode():
         assert d.oracle["post"]["solvable"] and s.oracle["post"]["solvable"]
         rec = json.loads(json.dumps(pair_to_json(d)))
         assert rec["params"]["matched"] is True
-        try:
-            di = make_pair(seed, "irrelevant", deterministic=True,
-                           matched=True)
-            si = make_pair(seed, "irrelevant", deterministic=False,
-                           matched=True)
+        pair = matched_irrelevant(seed)
+        if pair is not None:
+            di, si = pair
             assert di.start == si.start
             assert di.change["edge"] == si.change["edge"], \
                 "matched irrelevant target"
-        except ValueError:
-            # A seed that cannot build this condition is skipped, not
-            # counted against the invariant below.
-            pass
     assert eligible >= 10, f"matched yield too low in 40 seeds ({eligible})"
     # matched records rebuild and project cleanly
     ev = paired_evidence(first, k=3, evidence_seed=1)
