@@ -13,6 +13,12 @@ on:
   schedule:
     - cron: '29 22 * * 0'
 
+# Least privilege at the top, widened per job only where a job needs more.
+# Without this the workflow inherits the repository default, which can be
+# write-all. Scorecard's Token-Permissions check flags exactly that.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: DevSkim
@@ -23,7 +29,7 @@ jobs:
       security-events: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run DevSkim scanner
         uses: microsoft/DevSkim-Action@v1

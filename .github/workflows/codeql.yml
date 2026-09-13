@@ -15,6 +15,12 @@ on:
   schedule:
     - cron: "0 6 * * 1"
 
+# Least privilege at the top, widened per job only where a job needs more.
+# Without this the workflow inherits the repository default, which can be
+# write-all. Scorecard's Token-Permissions check flags exactly that.
+permissions:
+  contents: read
+
 jobs:
   analyze:
     name: analyze python

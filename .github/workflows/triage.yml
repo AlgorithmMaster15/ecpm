@@ -19,6 +19,12 @@ on:
   pull_request_target:
     types: [opened, reopened]
 
+# Least privilege at the top, widened per job only where a job needs more.
+# Without this the workflow inherits the repository default, which can be
+# write-all. Scorecard's Token-Permissions check flags exactly that.
+permissions:
+  contents: read
+
 jobs:
   add:
     if: vars.PROJECT_URL != ''

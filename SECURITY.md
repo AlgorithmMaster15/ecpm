@@ -57,6 +57,32 @@ scanner that fails on every push teaches people to ignore the Actions tab.
 Adding one back is deliberate work, not a default. If a tool is worth running
 it is worth a commit explaining what it covers that codeql and bandit do not.
 
+## Scorecard findings
+
+`scorecard.yml` rates this repository against OSSF supply-chain criteria
+written for widely depended-upon open source. Some apply here and some do
+not, so this records which is which rather than leaving the Security tab
+ambiguous.
+
+**Fixed.** Token-Permissions: every workflow now declares least privilege at
+the top and widens it per job only where needed. Without that block a
+workflow inherits the repository default, which can be write-all.
+
+**Worth doing, a settings change rather than a file.** Branch-Protection.
+Nothing currently stops a direct push to `main`, and several went in during
+the September integration. Requiring the `tests` check and one review would
+have caught at least one stale-base patch.
+
+**Open.** Pinned-Dependencies. Thirteen actions are pinned by tag rather than
+by commit SHA, so a tag could be moved under us. Pinning by SHA is correct and
+Dependabot maintains SHA pins, but it is a mechanical change worth doing in
+one pass rather than piecemeal.
+
+**Does not apply.** Fuzzing: there is no parser or protocol surface taking
+untrusted input. Code-Review: the project pushes to `main` by design at this
+stage, which the Branch-Protection item above would change if the group wants
+it. Packaging and Signed-Releases: nothing is released.
+
 Private vulnerability reporting is a repository setting rather than a file. If
 it is enabled, use it in preference to email, because it opens a private
 thread on the repository instead of relying on one inbox. If it is not, email
