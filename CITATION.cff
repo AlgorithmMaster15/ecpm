@@ -1,0 +1,63 @@
+cff-version: 1.2.0
+title: >-
+  ECPM: measuring in-context change detection against an evidence-only
+  baseline
+message: >-
+  If you use this software or its results, please cite it using the metadata
+  below.
+type: software
+# Contributors, listed alphabetically by family name. Ordering implies no
+# ranking: commit count and lines changed disagree on second and third place.
+# Paper authorship and author order are a separate decision, not settled here.
+#
+# Affiliation, email and ORCID are each contributor's own to fill in. The
+# placeholders below are commented out; uncomment your lines and replace the
+# values in a pull request against this file rather than asking someone else
+# to type them for you.
+authors:
+  - given-names: Efe
+    family-names: Bektes
+    affiliation: Istanbul Technical University
+    email: bektes23@itu.edu.tr
+    orcid: https://orcid.org/0009-0007-7066-7379
+
+  - given-names: Christian
+    family-names: Henne
+    # affiliation: YOUR INSTITUTION
+    # email: YOUR EMAIL
+    # orcid: https://orcid.org/0000-0000-0000-0000
+
+  - given-names: Pavlos
+    family-names: Koulatzidis
+    # affiliation: YOUR INSTITUTION
+    # email: YOUR EMAIL
+    # orcid: https://orcid.org/0000-0000-0000-0000
+
+  # The finetuning and second agentic arm live in github.com/mazwy/ecpm, a
+  # separate tree with no shared history, so there are no commits here yet.
+  # Listed in advance rather than added after the fact.
+  - given-names: Maciej
+    family-names: Zwierzynski
+    # affiliation: YOUR INSTITUTION
+    # email: YOUR EMAIL
+    # orcid: https://orcid.org/0000-0000-0000-0000
+repository-code: https://github.com/itu-itis25-bektes23/ecpm
+license: MIT
+abstract: >-
+  An 8-node packet-routing MDP generated in pairs: a world M0 and a copy M1
+  carrying at most one recorded intervention. A model reads balanced
+  observation logs from both periods and answers four probes: detection,
+  localization, preservation and adaptation. Routes are scored by execution
+  in the true simulator rather than by the model's own judgment.
+
+  The repository includes an evidence-only baseline, a non-reasoning counter
+  that answers the same probes from the same prompt view by arithmetic. It
+  establishes, per condition, how much of the task is solvable without
+  reasoning, so a model result can be read as above, at, or below what
+  counting alone achieves.
+keywords:
+  - in-context learning
+  - change detection
+  - world models
+  - large language models
+  - evaluation

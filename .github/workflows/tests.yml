@@ -1,0 +1,99 @@
+name: tests
+
+# The suites and the dry-run pilots pass on every supported version today.
+# Running them automatically is what keeps that true.
+#
+# This does not cover everything. Two defects reached main this month in
+# paths only a live provider exercises, and CI has no API key, so nothing
+# here would have caught the retry ones. The prompt-contract suite does
+# cover the wording class.
+#
+# Push is limited to main. Feature branches are covered by the pull_request
+# trigger, so work in progress is not marked failing while it is still being
+# written.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  suites:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is what the team runs locally; 3.12 catches deprecations early.
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # No install step and no requirements file: the tree is stdlib only,
+      # deliberately. If a dependency ever appears, this job fails, which is
+      # the intended alarm.
+      - name: Confirm the tree is stdlib only
+        run: |
+          python -c "import resource_mdp, ecpm_parser, ecpm_baseline, prompts, model_clients, run_pilot"
+
+      - name: Environment and parser
+        run: |
+          python test_resource_mdp.py
+          python test_ecpm_parser.py
+
+      - name: Baseline and prompt contract
+        run: |
+          python test_ecpm_baseline.py
+          python test_prompt_contract.py
+
+      - name: Harness and agentic arm
+        run: |
+          python test_explore_agent.py
+          python test_run_pilot.py
+
+      # Dry-run providers make no API calls, so the pilots are runnable in CI.
+      # This catches breakage in the harness that the suites do not reach.
+      - name: Dry-run pilots
+        run: |
+          python -B run_pilot.py --condition silent_break --seed 7 --mode sto --tag ci_silent_break
+          python -B run_pilot.py --condition redirect --seed 7 --mode sto --tag ci_redirect
+          python -B run_pilot.py --scenario seed7_no_change --mode sto --tag ci_no_change
+
+      # The run script reads its seed list from runs/seed_eligibility.json, so
+      # drift between that file and the criteria that justify it would be
+      # silent. Regenerating and diffing makes it loud.
+      - name: Generated artifacts reproduce exactly
+        run: |
+          python experiments/seed_eligibility.py
+          git diff --exit-code runs/seed_eligibility.json
+          python experiments/azure_budget.py --budget 100
+
+      # Image links in EXPLORE_AGENT.md broke silently when the file moved
+      # into docs/, and nothing objected. This objects.
+      - name: Markdown links resolve
+        run: |
+          python - <<'PY'
+          import os, re, sys
+
+          dead = []
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs
+                         if d not in (".git", "__pycache__", "pilot_artifacts")]
+              for name in files:
+                  if not name.endswith(".md"):
+                      continue
+                  path = os.path.join(root, name)
+                  text = open(path, encoding="utf-8", errors="ignore").read()
+                  pattern = r"\]\(([^)#:]+\.(?:md|svg|json|py|sh|yml|docx))\)"
+                  for m in re.finditer(pattern, text):
+                      target = os.path.normpath(os.path.join(root, m.group(1)))
+                      if not os.path.exists(target):
+                          dead.append(f"{path}: {m.group(1)}")
+
+          if dead:
+              print("dead links:")
+              print("\n".join("  " + d for d in dead))
+              sys.exit(1)
+          print("all markdown links resolve")
+          PY

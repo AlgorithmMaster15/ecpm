@@ -111,10 +111,13 @@ flowchart TD
 - `experiments/summarize_run.py` run artifacts to the reported statistics
 - `experiments/azure_budget.py` run costing from measured token usage
 - `experiments/run_two_turn_azure.sh` the two-turn run, resumable
-- `docs/` interface contract, paper spine, seed criteria, diagrams
+- `docs/` interface contract, paper spine, seed criteria, diagrams, figures
+- `CONTRIBUTING.md` the freeze rule, test conventions, writing rules
+- `AGENTS.md` the same conventions in short form, for AI coding agents
 - `archive/` freeze sign-off tooling, kept for provenance, not maintained
 - `runs/` artifacts, one directory per run
-- `exploratory/` prompt-safe packets, oracle packets, probability scorer
+- `experiments/exploratory/` prompt-safe packets, oracle packets, probability
+  scorer
 
 Tests are stdlib only: `test_resource_mdp.py`, `test_ecpm_parser.py`,
 `test_explore_agent.py`, `test_ecpm_baseline.py`, `test_run_pilot.py`,
@@ -300,6 +303,12 @@ Stated explicitly rather than left implicit.
   demonstrations of a phenomenon, not estimates of a rate.
 - `docs/INTERFACE.md` is titled v2.2 but declares schema version 2.1 internally.
   The declaration is correct; the title is a document revision number.
+
+## Licence and contributing
+
+MIT, see `LICENSE`. Conventions are in `CONTRIBUTING.md`, and the same rules
+in short form for AI coding agents are in `AGENTS.md`. CI runs the six suites
+and the dry-run pilots on every pull request.
 
 ## Write-up
 
