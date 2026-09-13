@@ -15,6 +15,26 @@ from ecpm_parser import (diagnose_route_beliefs, parse_icl_turn_a,
 from resource_mdp import prompt_view
 
 
+EXPECTED_ICL_BELIEF_DEFINITION = (
+    "destination is the non-current node reached on a successful attempt. "
+    "A destination is always different from the current node. Count an "
+    "observation as a success exactly when its next node differs from its "
+    "current node. p_success is the fraction of visible observations counted "
+    "as successes. If an available action has no successful observations in "
+    "the current period, keep its most recent earlier destination estimate if "
+    "one exists; otherwise use null."
+)
+
+
+def assert_icl_belief_definition(prompts):
+    assert run_pilot.ICL_BELIEF_DEFINITIONS == \
+        EXPECTED_ICL_BELIEF_DEFINITION
+    for level in run_pilot.ICL_LEVELS:
+        for period in ("pre", "post"):
+            assert prompts[level][period].count(
+                EXPECTED_ICL_BELIEF_DEFINITION) == 1
+
+
 def scenario(seed=8, condition="silent_break", k=10, budget=10):
     sc = dict(run_pilot.SCENARIO_DEFAULTS)
     sc.update({"name": "icl_det_gate_seed8", "seed": seed,
@@ -77,6 +97,7 @@ def test_levels_share_visible_evidence_and_raw_order():
     prompts = {level: {period: run_pilot.build_icl_prompt(
         view, level, period, queried) for period in ("pre", "post")}
         for level in run_pilot.ICL_LEVELS}
+    assert_icl_belief_definition(prompts)
     for period in ("pre", "post"):
         raw = "\n".join(run_pilot.raw_visible_rows(view, period))
         assert raw in prompts["explained_logs"][period]
@@ -84,9 +105,6 @@ def test_levels_share_visible_evidence_and_raw_order():
     assert "Each action has one destination" in prompts["empirical_table"]["pre"]
     assert "Each action has one destination" in prompts["explained_logs"]["pre"]
     for level in run_pilot.ICL_LEVELS:
-        assert "destination is the node the action is estimated to reach" in \
-            prompts[level]["pre"]
-        assert "p_success is the estimated probability" in prompts[level]["pre"]
         for period in ("pre", "post"):
             assert ("A route lists actions only. Its first item must be at "
                     "Start. The successful destination of its final action "
@@ -94,8 +112,29 @@ def test_levels_share_visible_evidence_and_raw_order():
                     "arrival.") in prompts[level][period]
             assert "finish at Goal" not in prompts[level][period]
     minimal = prompts["minimal_logs"]["pre"]
-    assert "failed attempt" not in minimal and "retried" not in minimal
+    assert "failed attempt" not in minimal
+    assert "retried" not in minimal
     print("PASS all levels share evidence; Levels 2/3 have byte-identical rows")
+
+
+def test_icl_belief_definition_guard_catches_injected_defect():
+    original = run_pilot.ICL_BELIEF_DEFINITIONS
+    try:
+        run_pilot.ICL_BELIEF_DEFINITIONS = "damaged definition"
+        sc, record, view = record_and_view()
+        queried = run_pilot.queried_pairs_for_icl(record, sc)
+        prompts = {level: {period: run_pilot.build_icl_prompt(
+            view, level, period, queried) for period in ("pre", "post")}
+            for level in run_pilot.ICL_LEVELS}
+        try:
+            assert_icl_belief_definition(prompts)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("damaged ICL belief definition was accepted")
+    finally:
+        run_pilot.ICL_BELIEF_DEFINITIONS = original
+    print("PASS injected ICL belief-definition defect is detected")
 
 
 def test_icl_route_terminal_action_contract():
@@ -191,13 +230,37 @@ def test_availability_and_no_change_dry_answers():
     assert scored["n_destination_scored"] == 4
     assert scored["destination_accuracy"] == 1.0
 
-    silent_sc, silent, _ = record_and_view()
+    silent_sc, silent, silent_view = record_and_view()
     queried = run_pilot.queried_pairs_for_icl(silent, silent_sc)
     target = run_pilot.protocol_target_pair(silent, silent_sc)
-    answer = json.loads(run_pilot._dry_run_icl_answer(silent, queried, "post"))
+    pre_answer = json.loads(run_pilot._dry_run_icl_answer(
+        silent, queried, "pre"))
+    post_answer = json.loads(run_pilot._dry_run_icl_answer(
+        silent, queried, "post"))
+    pre_row = next(row for row in pre_answer["pairs"]
+                   if (row["node"], row["action"]) == target)
+    post_row = next(row for row in post_answer["pairs"]
+                    if (row["node"], row["action"]) == target)
+    assert post_row["available"] is True
+    assert post_row["destination"] == pre_row["destination"]
+    assert post_row["p_success"] == 0.0
+    visible = run_pilot.visible_transition_stats(
+        run_pilot.raw_visible_rows(silent_view, "post"),
+        silent["legal_actions_post"], silent["legal_actions_pre"])
+    assert visible[target]["p_success"] == 0.0
+
+    redirect_sc, redirect, _ = record_and_view(
+        scenario(seed=1, condition="redirect"))
+    queried = run_pilot.queried_pairs_for_icl(redirect, redirect_sc)
+    target = run_pilot.protocol_target_pair(redirect, redirect_sc)
+    answer = json.loads(run_pilot._dry_run_icl_answer(
+        redirect, queried, "post"))
     row = next(row for row in answer["pairs"]
                if (row["node"], row["action"]) == target)
-    assert row["available"] is True and row["p_success"] == 0.0
+    assert row["available"] is True
+    assert row["destination"] == redirect["change"]["new_edge"]["to"]
+    assert row["destination"] != row["node"]
+    assert row["p_success"] == 1.0
 
     nc_sc, no_change, _ = record_and_view(scenario(condition="no_change"))
     queried = run_pilot.queried_pairs_for_icl(no_change, nc_sc)
@@ -205,7 +268,7 @@ def test_availability_and_no_change_dry_answers():
         no_change, queried, "post"))
     assert parsed["detection"]["changed"] is False
     assert parsed["localization"]["changed_pair"] is None
-    print("PASS silent/removal availability and no-change null localization")
+    print("PASS silent, redirect, removal, and no-change belief semantics")
 
 
 def _truth_pair(record, query, period, changed=False):
@@ -722,6 +785,7 @@ def test_summary_generation_and_safe_replay():
 if __name__ == "__main__":
     test_legacy_prompt_and_scorer_regression()
     test_levels_share_visible_evidence_and_raw_order()
+    test_icl_belief_definition_guard_catches_injected_defect()
     test_icl_route_terminal_action_contract()
     test_empirical_table_uses_visible_inputs_only()
     test_period_boundary_and_prompt_neutrality()

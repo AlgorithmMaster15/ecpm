@@ -239,9 +239,13 @@ ICL_MINIMAL_MECHANICS = (
 )
 
 ICL_BELIEF_DEFINITIONS = (
-    "destination is the node the action is estimated to reach when it "
-    "succeeds. p_success is the estimated probability that one attempt "
-    "reaches that destination."
+    "destination is the non-current node reached on a successful attempt. "
+    "A destination is always different from the current node. Count an "
+    "observation as a success exactly when its next node differs from its "
+    "current node. p_success is the fraction of visible observations counted "
+    "as successes. If an available action has no successful observations in "
+    "the current period, keep its most recent earlier destination estimate if "
+    "one exists; otherwise use null."
 )
 
 ICL_ROUTE_INSTRUCTION = (
