@@ -71,6 +71,26 @@ This makes the baseline the reference every model result is read against
 rather than a control. It also enforces the project rule that no model may be
 said to fail at localization on an instance the baseline cannot solve either.
 
+## An independent check on the ceiling
+
+The evidence-only baseline was built in this repository. Separately, and
+without either side knowing, the finetuning arm computed an information
+ceiling per condition from its own scoring.
+
+The two agree. Deterministic silent break is solved by counting and has no
+headroom; stochastic degradation at low K is the only condition where a
+model has meaningful room against the null.
+
+Two implementations, two scorers, two people, one conclusion. That is worth
+more than either result alone, because the ceiling is the claim the rest of
+the interpretation rests on: it decides which conditions can support a model
+result at all. A number reached twice by different routes is a different kind
+of number.
+
+Reconciling the two, in particular whether the seed eligibility criteria
+match, is open. See `experiments/seed_eligibility.py` and
+`docs/SEED_SELECTION.md` for this side of it.
+
 ## Repository layout
 
 ```mermaid
