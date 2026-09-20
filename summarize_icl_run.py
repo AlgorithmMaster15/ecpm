@@ -56,6 +56,8 @@ def row_for(artifact):
     return {
         "level": artifact["level"],
         "seed": artifact["scenario"]["seed"],
+        "budget": artifact["scenario"]["budget"],
+        "condition": artifact["scenario"]["condition"],
         "repeat": artifact["repeat"],
         "detection": bool(dl.get("detection_correct")),
         "localization": bool(dl.get("localization_correct")),
@@ -88,27 +90,42 @@ def main():
     if not artifacts:
         raise SystemExit(f"no ICL artifacts found under {args.root}")
     rows = [row_for(a) for a in artifacts]
-    by_level = collections.defaultdict(list)
+    # A directory can hold more than one cell when two runs shared a tag,
+    # so group by the settings that define a cell, not by level alone.
+    by_cell = collections.defaultdict(list)
     for row in rows:
-        by_level[row["level"]].append(row)
+        by_cell[(row["condition"], row["seed"], row["budget"],
+                 row["level"])].append(row)
 
-    seeds = sorted({row["seed"] for row in rows})
-    print(f"{len(rows)} conversations, seeds {seeds}, "
-          f"{len(by_level)} levels\n")
+    cells = sorted({key[:3] for key in by_cell})
+    print(f"{len(rows)} conversations in {len(cells)} cell(s)\n")
+    if len(cells) > 1:
+        print("WARNING: this directory holds more than one condition, seed "
+              "or budget. They are reported separately below; do not read "
+              "them as one run.\n")
     header = (f"{'level':11s} {'n':>2s} " +
               " ".join(f"{name:>14s}" for name in FIELDS) +
               f" {'belief_B':>9s}")
-    print(header)
-    print("-" * len(header))
-    for level in sorted(by_level):
-        group = by_level[level]
-        n = len(group)
-        cells = " ".join(
-            f"{sum(row[name] for row in group):>11d}/{n:<2d}"
-            for name in FIELDS)
-        belief = sum(row["belief_acc_b"] for row in group) / n
-        print(f"{level:11s} {n:>2d} {cells} {belief:>9.2f}")
+    for condition, seed, budget in cells:
+        print(f"{condition}, seed {seed}, budget {budget}")
+        print(header)
+        print("-" * len(header))
+        for level in sorted(l for c, s_, b, l in by_cell
+                            if (c, s_, b) == (condition, seed, budget)):
+            group = by_cell[(condition, seed, budget, level)]
+            n = len(group)
+            body = " ".join(
+                f"{sum(row[name] for row in group):>11d}/{n:<2d}"
+                for name in FIELDS)
+            belief = sum(row["belief_acc_b"] for row in group) / n
+            print(f"{level:11s} {n:>2d} {body} {belief:>9.2f}")
+        print()
 
+    ok = [row for row in rows if not row["truncated"]]
+    if len(ok) != len(rows):
+        print(f"NOTE: {len(rows) - len(ok)} truncated conversation(s) are "
+              f"counted in the table above but are not scoreable; rerun "
+              f"them with a larger --max-tokens before reading the cell.\n")
     truncated = [row for row in rows if row["truncated"]]
     malformed = [row for row in rows if not row["well_formed"]]
     tokens = [t for row in rows for t in row["reasoning_tokens"]]
