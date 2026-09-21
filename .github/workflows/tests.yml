@@ -62,6 +62,7 @@ jobs:
         run: |
           python test_explore_agent.py
           python test_run_pilot.py
+          python test_icl_graph.py
 
       # Dry-run providers make no API calls, so the pilots are runnable in CI.
       # This catches breakage in the harness that the suites do not reach.

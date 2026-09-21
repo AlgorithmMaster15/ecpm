@@ -1,5 +1,7 @@
 # docs
 
+- [ICL_GRAPH.md](ICL_GRAPH.md): graph-availability follow-up and offline checks.
+
 - `INTERFACE.md` the frozen answer contract and record schema. Section 7 is
   what `ecpm_parser.py` implements.
 - `EXPLORE_AGENT.md` the agentic exploration arm.
