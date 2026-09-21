@@ -1,7 +1,8 @@
 # ICL graph availability
 
 `icl_graph_availability_v1` is an additive, passive follow-up on the known
-deterministic seed-8 silent-break world. It does not change older protocols.
+deterministic silent-break worlds at seeds 8, 13 and 25. It does not change
+older protocols or the six seed-8 prompts.
 
 | Condition | Period A | Period B |
 | --- | --- | --- |
@@ -26,6 +27,23 @@ python3 -B run_pilot.py --protocol icl_graph_availability_v1 \
   --request-profile gemma_e4b --provider dry-run --reasoning-mode off \
   --max-tokens 8192 --out /tmp/icl_graph_dry --tag graph_ab
 ```
+
+For the additional worlds, use `--seed 13` or `--seed 25` with the preview
+script. Add `--eligibility-report /tmp/icl_graph_eligibility.json` to save the
+existing deterministic search over seeds 1 through 1000, including checks and
+rejection reasons through seed 25. No selection criteria are added.
+The scenario names are `icl_det_gate_seed13` and `icl_det_gate_seed25`.
+Start, goal and queried pairs are derived from each world: the changed action
+plus four unchanged controls, using the existing deterministic selection.
+
+The planned local OFF extension is two worlds, each with all three conditions
+and three repeated conversations, using sampling seeds 0, 1 and 2. Run each
+block once under a new tag with the reviewed local configuration, keeping
+K=budget=10, evidence seed 0 and output allowance 8192. Dry previews establish
+reference correctness, not deployment readiness or model performance.
+ON remains conditional on an imperfect, operationally valid OFF block and
+uses all three repeats for that same graph and condition. Its OFF reference
+must match the implementation commit, static prompts and deployment controls.
 
 ## Single-model handoff
 
@@ -166,8 +184,10 @@ diagnostic, not a balanced reasoning-effect comparison.
 Real ON execution requires `--off-reference` pointing to that completed OFF
 directory, and checks matching commit, prompts, model and non-reasoning settings.
 
-This is one development graph, not three independent worlds. Detection cannot
-measure false alarms here. Five queried pairs do not measure full graph learning.
+Seed 8 is the original development graph; seeds 13 and 25 are additional
+eligible worlds, not new model results. Repeats within a graph are not
+independent graph samples. Detection cannot measure false alarms here.
+Five queried pairs do not measure full graph learning.
 Supplying the graph adds explicit information and a shorter representation.
 Difficulty ordering and separate internal abilities are not established.
 

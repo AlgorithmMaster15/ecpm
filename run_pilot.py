@@ -146,6 +146,14 @@ SCENARIOS = {
         "condition": "silent_break", "seed": 8, "k": 10, "budget": 10,
         "variants": ("det",),
     },
+    "icl_det_gate_seed13": {
+        "condition": "silent_break", "seed": 13, "k": 10, "budget": 10,
+        "variants": ("det",),
+    },
+    "icl_det_gate_seed25": {
+        "condition": "silent_break", "seed": 25, "k": 10, "budget": 10,
+        "variants": ("det",),
+    },
     "seed7_hard_removal": {"condition": "hard_removal"},
     # degradation is undefined in deterministic worlds (v2.1): stochastic only
     "seed7_degradation": {"condition": "degradation", "variants": ("sto",)},

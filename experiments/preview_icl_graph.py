@@ -11,16 +11,31 @@ import icl_graph as graph
 import run_pilot as pilot
 
 
-def generate(out, input_price=None, output_price=None):
+def eligibility_report():
+    """Apply the existing deterministic silent-break rule, without new filters."""
+    checks = [pilot.deterministic_gate(seed) for seed in range(1, 1001)]
+    eligible = [r["seed"] for r in checks if r["eligible"]]
+    if eligible[:3] != list(graph.GRAPH_SEEDS):
+        raise ValueError("deterministic eligibility selection drifted")
+    return {"rule": "run_pilot.deterministic_gate, unchanged", "range": [1, 1000],
+            "n_examined": len(checks), "eligible_seeds": eligible,
+            "first_three": eligible[:3], "checks_through_seed25": checks[:25]}
+
+
+def generate(out, input_price=None, output_price=None, seed=8):
     out = Path(out)
     if out.exists():
         raise ValueError("preview directory exists; use an unused path")
     sc = dict(pilot.SCENARIO_DEFAULTS)
-    sc.update(pilot.SCENARIOS["icl_det_gate_seed8"])
-    sc["name"] = "icl_det_gate_seed8"
+    sc.update(pilot.SCENARIOS[f"icl_det_gate_seed{seed}"])
+    sc["name"] = f"icl_det_gate_seed{seed}"
     record, view, variants, prompts = graph.prepare(sc)
+    queried = pilot.queried_pairs_for_icl(record, sc)
+    target = pilot.protocol_target_pair(record, sc)
     report = {"protocol": graph.PROTOCOL, "implementation_base": pilot.git_head(),
-              "model_calls": 0, "graph_seed": 8, "evidence_seed": 0,
+              "model_calls": 0, "graph_seed": seed, "evidence_seed": 0,
+              "start": view["start"], "goal": view["goal"],
+              "target": target, "queried_pairs": queried,
               "first_eligible_seed": pilot.first_deterministic_gate_seed(),
               "prompts": {}, "references": {}, "context_planning": {},
               "request_profiles": {}, "sol_cost_estimate": {}}
@@ -35,8 +50,8 @@ def generate(out, input_price=None, output_price=None):
             text = prompts[condition][i]
             raw, earlier = graph.reference_answer(v, earlier)
             parsed = (pilot.parse_icl_turn_a if i == 0 else pilot.parse_icl_turn_b)(raw)
-            scored = pilot.score_icl_turn(record, parsed, graph.PAIRS, "pre" if i == 0 else "post",
-                                         ("G", "a1"), pilot.visible_transition_stats(v["rows"], v["menu"]), pre_score)
+            scored = pilot.score_icl_turn(record, parsed, queried, "pre" if i == 0 else "post",
+                                         target, pilot.visible_transition_stats(v["rows"], v["menu"]), pre_score)
             if not scored["correct"]:
                 raise ValueError("sequential reference did not pass unchanged scorer")
             pre_score = scored["beliefs"]
@@ -85,10 +100,16 @@ def generate(out, input_price=None, output_price=None):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--seed", type=int, choices=graph.GRAPH_SEEDS, default=8)
+    ap.add_argument("--eligibility-report", help="save the unchanged seed-search audit outside Git")
     ap.add_argument("--input-price", type=float)
     ap.add_argument("--output-price", type=float)
     args = ap.parse_args()
     if (args.input_price is None) != (args.output_price is None):
         ap.error("supply both prices or neither")
-    report = generate(args.out, args.input_price, args.output_price)
+    if args.eligibility_report:
+        with Path(args.eligibility_report).open("x") as f:
+            json.dump(eligibility_report(), f, indent=2)
+            f.write("\n")
+    report = generate(args.out, args.input_price, args.output_price, args.seed)
     print(json.dumps({k: report[k] for k in ("model_calls", "graph_seed", "context_planning", "sol_cost_estimate")}, indent=2))

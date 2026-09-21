@@ -118,6 +118,7 @@ class GraphTests(unittest.TestCase):
     def setUp(self):
         self.sc = scenario()
         self.record, self.view, self.views, self.prompts = graph.prepare(self.sc)
+        self.queried = pilot.queried_pairs_for_icl(self.record, self.sc)
 
     def test_prompts_and_fixed_evidence(self):
         expected_hashes = ("d0d3cae43bf0a1174fc7edeb73c8f1da8401dcc964da462ab0cfff82e31efc05",
@@ -131,7 +132,7 @@ class GraphTests(unittest.TestCase):
                 self.assertEqual(text.count(graph.COMMON), 1)
                 self.assertTrue(text.endswith(graph.ENDING + "\n"))
                 self.assertIn(graph.PLACEHOLDERS, text)
-                for q in graph.PAIRS:
+                for q in self.queried:
                     self.assertEqual(text.count(f'{{"node":"{q["node"]}","action":"{q["action"]}","available":<BOOLEAN>'), 1)
                 for word in ("graph_ab", "graph_a", "logs_only", "oracle", "intervention", "target", "controls", "seed"):
                     self.assertNotIn(word, text)
@@ -147,7 +148,7 @@ class GraphTests(unittest.TestCase):
     def test_isolation_and_injected_view_defects(self):
         record = copy.deepcopy(self.record)
         record["world_post"] = {"oracle": "LEAK"}
-        self.assertEqual(graph.build_prompt(graph.authorized_view(record, self.view, "pre", True)), self.prompts["graph_ab"][0])
+        self.assertEqual(graph.build_prompt(graph.authorized_view(record, self.view, "pre", True, self.queried)), self.prompts["graph_ab"][0])
         for mutate in (lambda v: v.update(oracle="LEAK"),
                        lambda v: v["graph"][0].update(target=True),
                        lambda v: v.update(rows=[]),
@@ -169,7 +170,7 @@ class GraphTests(unittest.TestCase):
                 raw, earlier = graph.reference_answer(v, earlier)
                 parsed = (pilot.parse_icl_turn_a if i == 0 else pilot.parse_icl_turn_b)(raw)
                 visible = pilot.visible_transition_stats(v["rows"], v["menu"])
-                scored = pilot.score_icl_turn(self.record, parsed, graph.PAIRS,
+                scored = pilot.score_icl_turn(self.record, parsed, self.queried,
                                              "pre" if i == 0 else "post", ("G", "a1"), visible, pre_score)
                 self.assertTrue(scored["correct"])
                 self.assertEqual(scored["beliefs"]["p_mae_visible"], 0)
@@ -183,7 +184,7 @@ class GraphTests(unittest.TestCase):
             broken = json.loads(raw)
             broken["route"] = [{"node": "G", "action": "a1"}, {"node": "E", "action": "a2"}]
             parsed = pilot.parse_icl_turn_b(json.dumps(broken))
-            scored = pilot.score_icl_turn(self.record, parsed, graph.PAIRS, "post", ("G", "a1"), visible, pre_score)
+            scored = pilot.score_icl_turn(self.record, parsed, self.queried, "post", ("G", "a1"), visible, pre_score)
             self.assertFalse(scored["correct"])
             self.assertFalse(scored["route"].get("is_optimal"))
 
@@ -195,8 +196,114 @@ class GraphTests(unittest.TestCase):
             "134bcee56435dc9833c5b01adbbff1070971209a41c23b57bf3155fbf94b33cf",
             "64a0a2bae2b5235effcd58d0c50ca8a5c7fae8b4fa850754b40f4b3c7a20bd30",
             "9ff49bc011972c1955892e4594e87726cec69ec21c0059a259a930a4e71554fd"]
-        self.assertEqual([pilot.sha256_text(pilot.build_icl_prompt(self.view, level, period, graph.PAIRS))
+        self.assertEqual([pilot.sha256_text(pilot.build_icl_prompt(self.view, level, period, self.queried))
                           for level in pilot.ICL_LEVELS for period in ("pre", "post")], expected)
+
+    def test_seed8_complete_prompt_snapshots(self):
+        expected = {
+            'graph_ab': ['1a6a522b5575dfa3aff48a1e0ded174eaf2bca06c793ef59445a41105ddbda09',
+                         '30047c971df6ceebe572afd06c991028a8628491cb7670d7b4279cce0006629f'],
+            'graph_a': ['1a6a522b5575dfa3aff48a1e0ded174eaf2bca06c793ef59445a41105ddbda09',
+                        'fa9240391fe746453b3076e5678ab52801ec8c7ecd44ff8699a9f54e45e15793'],
+            'logs_only': ['1fca7f391cf71d28e7078f2125bcd3ec054797e4bc6f9992264b3da182589320',
+                          'fa9240391fe746453b3076e5678ab52801ec8c7ecd44ff8699a9f54e45e15793']}
+        self.assertEqual({c: [pilot.sha256_text(p) for p in ps] for c, ps in self.prompts.items()}, expected)
+
+    def test_existing_eligibility_search_and_guards(self):
+        from experiments.preview_icl_graph import eligibility_report
+        report = eligibility_report()
+        self.assertEqual(report['first_three'], [8, 13, 25])
+        self.assertEqual(report['n_examined'], 1000)
+        self.assertIn('pre_optimum_unique', report['checks_through_seed25'][0]['reasons'])
+        with self.assertRaisesRegex(ValueError, 'supports seeds'):
+            graph.prepare({**self.sc, 'seed': 1})
+        with patch('run_pilot.deterministic_gate', return_value={'eligible': False}):
+            with self.assertRaisesRegex(ValueError, 'fails deterministic eligibility'):
+                graph.prepare(self.sc)
+            with self.assertRaisesRegex(ValueError, 'selection drifted'):
+                eligibility_report()
+
+    def test_new_worlds_prompts_references_and_dry_runs(self):
+        from experiments.preview_icl_graph import generate
+        for seed in (13, 25):
+            sc = {**self.sc, **pilot.SCENARIOS[f'icl_det_gate_seed{seed}'], 'name': f'icl_det_gate_seed{seed}'}
+            record, view, variants, prompts = graph.prepare(sc)
+            queried = pilot.queried_pairs_for_icl(record, sc)
+            target = pilot.protocol_target_pair(record, sc)
+            self.assertEqual(len(queried), 5)
+            self.assertIn({'node': target[0], 'action': target[1]}, queried)
+            self.assertNotEqual(queried, self.queried)
+            if seed == 25:
+                self.assertIn('a4', variants['graph_ab'][0]['menu']['C'])
+            for period in (0, 1):
+                self.assertEqual(len({prompts[c][period].replace(graph.graph_block(variants[c][period]), '', 1)
+                    if variants[c][period]['graph'] is not None else prompts[c][period] for c in graph.CONDITIONS}), 1)
+            poisoned = copy.deepcopy(record)
+            poisoned['world_post'] = {'oracle': 'LEAK'}
+            for c in graph.CONDITIONS:
+                self.assertEqual(graph.build_prompt(graph.authorized_view(poisoned, view, 'pre', c != 'logs_only', queried)), prompts[c][0])
+                self.assertNotIn('Period B', prompts[c][0])
+                self.assertIn(f"Start: {view['start']}   Goal: {view['goal']}", prompts[c][0])
+                for text in prompts[c]:
+                    for word in ('oracle', 'evaluator', 'target', 'intervention', 'controls'):
+                        self.assertNotIn(word, text)
+            broken = copy.deepcopy(variants['graph_ab'][0])
+            broken['rows'][0] = '[C, a99, A]'
+            with self.assertRaisesRegex(ValueError, 'not in current menu'):
+                graph.build_prompt(broken)
+            broken = copy.deepcopy(variants['graph_ab'][0])
+            broken['queried_pairs'][0]['target'] = True
+            with self.assertRaisesRegex(ValueError, 'without role labels'):
+                graph.build_prompt(broken)
+            broken = copy.deepcopy(variants['graph_ab'][0])
+            broken['queried_pairs'][1] = broken['queried_pairs'][0]
+            with self.assertRaisesRegex(ValueError, 'distinct and sorted'):
+                graph.build_prompt(broken)
+            with tempfile.TemporaryDirectory() as directory:
+                report = generate(Path(directory) / 'prompts', seed=seed)
+                self.assertEqual(report['graph_seed'], seed)
+                for condition in graph.CONDITIONS:
+                    with patch('icl_graph.urllib.request.OpenerDirector.open', side_effect=AssertionError('offline only')):
+                        outputs = graph.run_suite(sc, args(condition=condition), Path(directory) / condition)
+                    self.assertEqual(len(outputs), 3)
+                    for repeat, output in enumerate(outputs, 1):
+                        a = json.loads(Path(output['path']).read_text())
+                        self.assertEqual(a['scenario']['seed'], seed)
+                        self.assertEqual(a['identity']['scenario']['seed'], seed)
+                        self.assertEqual(a['queried_pairs'], queried)
+                        self.assertEqual(a['model']['sampling_seed'], repeat - 1)
+                        self.assertTrue(all(graph.audit_artifact(a).values()))
+                        for name in ('A', 'B'):
+                            t, ref = a['turns'][name], report['references'][condition][name]
+                            self.assertEqual(t['scored'], ref['scored'])
+                            self.assertTrue(t['scored']['correct'])
+                            self.assertEqual(t['scored']['beliefs']['accuracy'], 1)
+                            self.assertEqual(t['scored']['route']['regret'], 0)
+                        b = a['turns']['B']['scored']
+                        self.assertTrue(b['detection_localization']['detection_correct'])
+                        self.assertTrue(b['detection_localization']['localization_correct'])
+                        self.assertEqual(b['control_preservation']['mean_control_preservation'], 1)
+                        self.assertTrue(b['control_preservation']['all_four_controls_correct'])
+
+    def test_on_refuses_another_graphs_off_reference(self):
+        for seed, other in ((13, 25), (25, 13)):
+            sc = {**self.sc, 'seed': seed}
+            record, view, variants, prompts = graph.prepare(sc)
+            foreign_prompts = graph.prepare({**self.sc, 'seed': other})[3]
+            for condition in graph.CONDITIONS:
+                with tempfile.TemporaryDirectory() as directory:
+                    for repeat in (1, 2, 3):
+                        a = args(condition=condition, provider='openai')
+                        ext = graph.GraphRun(a, variants[condition], prompts[condition], repeat - 1, config(), prompts)
+                        values = [envelope(ext.dry_answers[t]) for t in ('A', 'B')]
+                        with patch('icl_graph.urllib.request.OpenerDirector.open', side_effect=[Reply(v) for v in values]):
+                            artifact, path, _ = pilot.run_icl_two_response_once(record, view, sc, True, a,
+                                condition, repeat, repeat - 1, directory, ext)
+                    artifact['turns']['A']['scored']['correct'] = False
+                    pilot._write_json_atomic(path, artifact)
+                    self.assertEqual(graph.matched_off(directory, config(mode='on'), condition, prompts[condition]), [1, 2, 3])
+                    with self.assertRaisesRegex(ValueError, 'must match OFF'):
+                        graph.matched_off(directory, config(mode='on'), condition, foreign_prompts[condition])
 
     def test_request_profiles_and_controls(self):
         for profile in graph.MODELS:

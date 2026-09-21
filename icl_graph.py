@@ -20,8 +20,7 @@ import run_pilot as pilot
 
 PROTOCOL = "icl_graph_availability_v1"
 CONDITIONS = ("graph_ab", "graph_a", "logs_only")
-PAIRS = [{"node": n, "action": a} for n, a in
-         (("B", "a2"), ("F", "a1"), ("F", "a2"), ("G", "a1"), ("H", "a2"))]
+GRAPH_SEEDS = (8, 13, 25)
 MODELS = {"gemma_e4b": "sunil-pathak/gemma-4-e4b-it",
           "gemma_31b": "google/gemma-4-31B-it", "sol": "gpt-5.6-sol",
           "gemma_31b_together": "google/gemma-4-31B-it"}
@@ -66,11 +65,11 @@ PLACEHOLDERS = ("Replace all angle-bracket placeholders with values. DESTINATION
                 "node string or null; PROBABILITY is a number or null; BOOLEAN is "
                 "true or false. The route array must contain all required action steps.")
 ENDING = "Return exactly one JSON object, with no text or code fences before or after it."
-VIEW_KEYS = {"period", "nodes", "start", "goal", "menu", "rows", "graph"}
+VIEW_KEYS = {"period", "nodes", "start", "goal", "menu", "rows", "graph", "queried_pairs"}
 EDGE_KEYS = {"node", "action", "available", "destination", "p_success"}
 
 
-def authorized_view(record, view, period, include_graph):
+def authorized_view(record, view, period, include_graph, queried):
     """Outer orchestration only: project whitelisted CURRENT period fields."""
     menu = copy.deepcopy(view[f"legal_actions_{period}"])
     for node in view["nodes"]:
@@ -86,7 +85,8 @@ def authorized_view(record, view, period, include_graph):
     result = {"period": "A" if period == "pre" else "B",
               "nodes": list(view["nodes"]), "start": view["start"],
               "goal": view["goal"], "menu": menu,
-              "rows": pilot.raw_visible_rows(view, period), "graph": graph}
+              "rows": pilot.raw_visible_rows(view, period), "graph": graph,
+              "queried_pairs": copy.deepcopy(queried)}
     validate_view(result)
     return result
 
@@ -96,19 +96,31 @@ def validate_view(view):
     if set(view) != VIEW_KEYS or view["period"] not in ("A", "B"):
         raise ValueError("unauthorized period-view fields")
     nodes = view["nodes"]
-    if nodes != list("ABCDEFGH") or view["start"] != "G" or view["goal"] != "D":
+    if (nodes != list("ABCDEFGH") or view["start"] not in nodes
+            or view["goal"] not in nodes or view["start"] == view["goal"]):
         raise ValueError("only the fixed eight-node pilot is supported")
     menu = view["menu"]
     if set(menu) != set(nodes) or any(
             not isinstance(actions, list) or len(set(actions)) != len(actions)
-            or any(not re.fullmatch(r"a[1-3]", action) for action in actions)
+            or any(not re.fullmatch(r"a[1-9][0-9]*", action) for action in actions)
             for actions in menu.values()):
         raise ValueError("invalid current menu")
+    queried = view["queried_pairs"]
+    if (not isinstance(queried, list) or len(queried) != 5
+            or any(not isinstance(q, dict) or set(q) != {"node", "action"}
+                   or q["action"] not in menu.get(q["node"], []) for q in queried)):
+        raise ValueError("requires five available queried pairs without role labels")
+    keys = [(q["node"], q["action"]) for q in queried]
+    if keys != sorted(set(keys)):
+        raise ValueError("queried pairs must be distinct and sorted")
     if len(view["rows"]) != 160 or sum(map(len, menu.values())) != 16:
         raise ValueError("pilot requires 160 rows and 16 available actions")
     for row in view["rows"]:
-        if not re.fullmatch(r"\[[A-H], a[1-3], [A-H]\]", row):
+        if not re.fullmatch(r"\[[A-H], a[1-9][0-9]*, [A-H]\]", row):
             raise ValueError("invalid observation row")
+        node, action, _ = row[1:-1].split(", ")
+        if action not in menu[node]:
+            raise ValueError("observation action not in current menu")
     stats = pilot.visible_transition_stats(view["rows"], menu)
     if any(s["observations"] != 10 or s["p_success"] not in (0, 1)
            or len([n for n in s["next_state_counts"] if n != key[0]]) > 1
@@ -155,7 +167,7 @@ def build_prompt(view):
     validate_view(view)
     period = view["period"]
     lines = []
-    for pair in PAIRS:
+    for pair in view["queried_pairs"]:
         fields = f'{{"node":"{pair["node"]}","action":"{pair["action"]}","available":<BOOLEAN>'
         if period == "B":
             fields += ',"changed":<BOOLEAN>'
@@ -175,24 +187,25 @@ def build_prompt(view):
             + graph_block(view)
             + f"Raw shuffled observations, Period {period}:\n"
             + "\n".join(view["rows"]) + "\n\nPairs to report in this order:\n"
-            + pilot._format_queried_pairs(PAIRS) + "\n\n" + output + "\n\n"
+            + pilot._format_queried_pairs(view["queried_pairs"]) + "\n\n" + output + "\n\n"
             + schema + "\n" + ENDING + "\n")
 
 
 def prepare(sc):
-    required = {"seed": 8, "condition": "silent_break", "matched": True,
+    required = {"condition": "silent_break", "matched": True,
                 "k": 10, "budget": 10, "evidence_seed": 0, "rendering": "F2_shuffled"}
-    if any(sc.get(k) != v for k, v in required.items()):
-        raise ValueError("graph protocol supports only seed-8 deterministic silent break, K=budget=10, evidence seed=0")
+    if sc.get("seed") not in GRAPH_SEEDS or any(sc.get(k) != v for k, v in required.items()):
+        raise ValueError("graph protocol supports seeds 8, 13, 25: deterministic silent break, K=budget=10, evidence seed=0")
+    if not pilot.deterministic_gate(sc["seed"])["eligible"]:
+        raise ValueError("graph seed fails deterministic eligibility")
     record = pilot.build_record(sc, True)
     view = pilot.prompt_view(record, rendering="F2_shuffled", periods=("pre", "post"),
                              budget_per_pair=10, budget_seed=0)
-    if pilot.queried_pairs_for_icl(record, sc) != PAIRS:
-        raise ValueError("fixed queried pairs changed")
+    queried = pilot.queried_pairs_for_icl(record, sc)
     variants = {}
     for condition in CONDITIONS:
         variants[condition] = [authorized_view(record, view, period,
-                              condition == "graph_ab" or (condition == "graph_a" and period == "pre"))
+                              condition == "graph_ab" or (condition == "graph_a" and period == "pre"), queried)
                               for period in ("pre", "post")]
     # Freeze all six before selecting a condition or making any call.
     prompts = {c: [build_prompt(v) for v in views] for c, views in variants.items()}
@@ -226,7 +239,7 @@ def reference_answer(view, earlier=None):
     dests = {key: {row["destination"]: 1} for key, row in estimates.items()
              if row["destination"] is not None}
     route = ecpm_baseline.plan_route(dests, route_stats, view["start"], view["goal"], view["menu"])
-    pairs = [dict(estimates[(q["node"], q["action"])]) for q in PAIRS]
+    pairs = [dict(estimates[(q["node"], q["action"])]) for q in view["queried_pairs"]]
     answer = {"pairs": pairs, "route": route["route"]}
     if earlier is not None:
         changed = {key for key in set(earlier) | set(estimates)
