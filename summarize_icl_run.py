@@ -67,6 +67,8 @@ def row_for(artifact):
         "route_b_optimal": b_scored.get("route", {}).get("is_optimal") is True,
         "belief_acc_a": a_scored.get("beliefs", {}).get("accuracy", 0.0),
         "belief_acc_b": b_scored.get("beliefs", {}).get("accuracy", 0.0),
+        "mae_truth": b_scored.get("beliefs", {}).get("p_mae_truth"),
+        "mae_visible": b_scored.get("beliefs", {}).get("p_mae_visible"),
         "well_formed": bool(a_scored.get("well_formed")) and bool(
             b_scored.get("well_formed")),
         "truncated": bool(turn_a.get("truncated") or turn_b.get("truncated")),
@@ -105,7 +107,7 @@ def main():
               "them as one run.\n")
     header = (f"{'level':11s} {'n':>2s} " +
               " ".join(f"{name:>14s}" for name in FIELDS) +
-              f" {'belief_B':>9s}")
+              f" {'belief_B':>9s} {'MAEtruth':>9s} {'MAEvis':>7s}")
     for condition, seed, budget in cells:
         print(f"{condition}, seed {seed}, budget {budget}")
         print(header)
@@ -118,7 +120,11 @@ def main():
                 f"{sum(row[name] for row in group):>11d}/{n:<2d}"
                 for name in FIELDS)
             belief = sum(row["belief_acc_b"] for row in group) / n
-            print(f"{level:11s} {n:>2d} {body} {belief:>9.2f}")
+            def avg(field):
+                vals = [r[field] for r in group if r[field] is not None]
+                return sum(vals) / len(vals) if vals else float("nan")
+            print(f"{level:11s} {n:>2d} {body} {belief:>9.2f} "
+                  f"{avg('mae_truth'):>9.3f} {avg('mae_visible'):>7.3f}")
         print()
 
     ok = [row for row in rows if not row["truncated"]]
