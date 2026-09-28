@@ -3,6 +3,10 @@
 Analysis and run scripts. Nothing here is imported by the harness; each is
 run directly and writes an artifact under `runs/`.
 
+- [preview_icl_model_first.py](preview_icl_model_first.py): exact locked prompts,
+  offline references, saved-score reports and human-extraction forms; outputs
+  to unused paths and makes no provider calls.
+
 - [preview_icl_graph.py](preview_icl_graph.py): six graph-availability prompts,
   sequential references and planning estimates; requires an unused external
   output directory and makes no provider calls.

@@ -1,0 +1,741 @@
+{
+  "seed": 25,
+  "source_protocol": "icl_graph_availability_v1",
+  "scenario": {
+    "seed": 25,
+    "condition": "silent_break",
+    "matched": true,
+    "k": 10,
+    "budget": 10,
+    "evidence_seed": 0,
+    "rendering": "F2_shuffled"
+  },
+  "A": {
+    "period": "A",
+    "nodes": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H"
+    ],
+    "start": "E",
+    "goal": "G",
+    "menu": {
+      "A": [
+        "a1",
+        "a2"
+      ],
+      "B": [
+        "a1",
+        "a2"
+      ],
+      "C": [
+        "a1",
+        "a2",
+        "a3",
+        "a4"
+      ],
+      "D": [
+        "a1",
+        "a2"
+      ],
+      "E": [
+        "a1",
+        "a2"
+      ],
+      "F": [
+        "a1",
+        "a2"
+      ],
+      "H": [
+        "a1",
+        "a2"
+      ],
+      "G": []
+    },
+    "rows": [
+      "[B, a1, D]",
+      "[H, a1, E]",
+      "[F, a1, G]",
+      "[C, a2, A]",
+      "[E, a1, H]",
+      "[F, a1, G]",
+      "[C, a1, F]",
+      "[A, a2, H]",
+      "[C, a1, F]",
+      "[H, a1, E]",
+      "[B, a2, A]",
+      "[F, a2, E]",
+      "[C, a4, H]",
+      "[C, a4, H]",
+      "[B, a1, D]",
+      "[E, a1, H]",
+      "[C, a1, F]",
+      "[E, a2, D]",
+      "[F, a1, G]",
+      "[E, a1, H]",
+      "[F, a2, E]",
+      "[C, a3, B]",
+      "[F, a2, E]",
+      "[E, a1, H]",
+      "[A, a1, G]",
+      "[H, a1, E]",
+      "[H, a2, G]",
+      "[D, a1, C]",
+      "[H, a2, G]",
+      "[C, a3, B]",
+      "[D, a2, F]",
+      "[D, a1, C]",
+      "[D, a1, C]",
+      "[C, a4, H]",
+      "[C, a3, B]",
+      "[E, a2, D]",
+      "[C, a3, B]",
+      "[H, a2, G]",
+      "[A, a2, H]",
+      "[F, a2, E]",
+      "[B, a2, A]",
+      "[A, a2, H]",
+      "[C, a4, H]",
+      "[E, a2, D]",
+      "[B, a1, D]",
+      "[C, a3, B]",
+      "[H, a2, G]",
+      "[C, a4, H]",
+      "[F, a1, G]",
+      "[B, a2, A]",
+      "[D, a1, C]",
+      "[B, a1, D]",
+      "[A, a2, H]",
+      "[C, a1, F]",
+      "[B, a1, D]",
+      "[A, a2, H]",
+      "[H, a1, E]",
+      "[B, a2, A]",
+      "[A, a1, G]",
+      "[F, a2, E]",
+      "[A, a1, G]",
+      "[H, a1, E]",
+      "[D, a1, C]",
+      "[C, a2, A]",
+      "[C, a3, B]",
+      "[A, a1, G]",
+      "[A, a1, G]",
+      "[D, a2, F]",
+      "[C, a3, B]",
+      "[D, a2, F]",
+      "[H, a2, G]",
+      "[B, a2, A]",
+      "[F, a2, E]",
+      "[H, a1, E]",
+      "[B, a1, D]",
+      "[C, a3, B]",
+      "[H, a2, G]",
+      "[C, a1, F]",
+      "[C, a4, H]",
+      "[F, a1, G]",
+      "[H, a2, G]",
+      "[E, a2, D]",
+      "[F, a1, G]",
+      "[A, a2, H]",
+      "[F, a1, G]",
+      "[C, a2, A]",
+      "[E, a1, H]",
+      "[C, a1, F]",
+      "[C, a2, A]",
+      "[C, a1, F]",
+      "[C, a3, B]",
+      "[C, a3, B]",
+      "[B, a2, A]",
+      "[C, a2, A]",
+      "[F, a2, E]",
+      "[E, a2, D]",
+      "[H, a1, E]",
+      "[E, a2, D]",
+      "[F, a1, G]",
+      "[A, a2, H]",
+      "[E, a2, D]",
+      "[F, a1, G]",
+      "[E, a1, H]",
+      "[F, a1, G]",
+      "[C, a2, A]",
+      "[B, a2, A]",
+      "[D, a1, C]",
+      "[H, a2, G]",
+      "[B, a1, D]",
+      "[B, a1, D]",
+      "[H, a1, E]",
+      "[B, a2, A]",
+      "[D, a2, F]",
+      "[E, a1, H]",
+      "[E, a2, D]",
+      "[D, a2, F]",
+      "[D, a2, F]",
+      "[B, a2, A]",
+      "[F, a2, E]",
+      "[B, a1, D]",
+      "[A, a1, G]",
+      "[C, a1, F]",
+      "[F, a2, E]",
+      "[C, a2, A]",
+      "[D, a2, F]",
+      "[H, a2, G]",
+      "[B, a1, D]",
+      "[B, a2, A]",
+      "[D, a2, F]",
+      "[A, a2, H]",
+      "[D, a2, F]",
+      "[H, a2, G]",
+      "[D, a2, F]",
+      "[D, a1, C]",
+      "[D, a1, C]",
+      "[H, a1, E]",
+      "[E, a1, H]",
+      "[A, a2, H]",
+      "[D, a1, C]",
+      "[C, a4, H]",
+      "[A, a2, H]",
+      "[E, a1, H]",
+      "[C, a2, A]",
+      "[F, a2, E]",
+      "[C, a4, H]",
+      "[C, a4, H]",
+      "[A, a1, G]",
+      "[A, a1, G]",
+      "[C, a1, F]",
+      "[C, a4, H]",
+      "[E, a1, H]",
+      "[E, a2, D]",
+      "[A, a1, G]",
+      "[C, a2, A]",
+      "[A, a1, G]",
+      "[C, a2, A]",
+      "[E, a2, D]",
+      "[D, a1, C]",
+      "[C, a1, F]",
+      "[H, a1, E]"
+    ],
+    "graph": [
+      {
+        "node": "A",
+        "action": "a1",
+        "available": true,
+        "destination": "G",
+        "p_success": 1.0
+      },
+      {
+        "node": "A",
+        "action": "a2",
+        "available": true,
+        "destination": "H",
+        "p_success": 1.0
+      },
+      {
+        "node": "B",
+        "action": "a1",
+        "available": true,
+        "destination": "D",
+        "p_success": 1.0
+      },
+      {
+        "node": "B",
+        "action": "a2",
+        "available": true,
+        "destination": "A",
+        "p_success": 1.0
+      },
+      {
+        "node": "C",
+        "action": "a1",
+        "available": true,
+        "destination": "F",
+        "p_success": 1.0
+      },
+      {
+        "node": "C",
+        "action": "a2",
+        "available": true,
+        "destination": "A",
+        "p_success": 1.0
+      },
+      {
+        "node": "C",
+        "action": "a3",
+        "available": true,
+        "destination": "B",
+        "p_success": 1.0
+      },
+      {
+        "node": "C",
+        "action": "a4",
+        "available": true,
+        "destination": "H",
+        "p_success": 1.0
+      },
+      {
+        "node": "D",
+        "action": "a1",
+        "available": true,
+        "destination": "C",
+        "p_success": 1.0
+      },
+      {
+        "node": "D",
+        "action": "a2",
+        "available": true,
+        "destination": "F",
+        "p_success": 1.0
+      },
+      {
+        "node": "E",
+        "action": "a1",
+        "available": true,
+        "destination": "H",
+        "p_success": 1.0
+      },
+      {
+        "node": "E",
+        "action": "a2",
+        "available": true,
+        "destination": "D",
+        "p_success": 1.0
+      },
+      {
+        "node": "F",
+        "action": "a1",
+        "available": true,
+        "destination": "G",
+        "p_success": 1.0
+      },
+      {
+        "node": "F",
+        "action": "a2",
+        "available": true,
+        "destination": "E",
+        "p_success": 1.0
+      },
+      {
+        "node": "H",
+        "action": "a1",
+        "available": true,
+        "destination": "E",
+        "p_success": 1.0
+      },
+      {
+        "node": "H",
+        "action": "a2",
+        "available": true,
+        "destination": "G",
+        "p_success": 1.0
+      }
+    ],
+    "queried_pairs": [
+      {
+        "node": "D",
+        "action": "a2"
+      },
+      {
+        "node": "E",
+        "action": "a1"
+      },
+      {
+        "node": "E",
+        "action": "a2"
+      },
+      {
+        "node": "F",
+        "action": "a2"
+      },
+      {
+        "node": "H",
+        "action": "a1"
+      }
+    ]
+  },
+  "B": {
+    "period": "B",
+    "nodes": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H"
+    ],
+    "start": "E",
+    "goal": "G",
+    "menu": {
+      "A": [
+        "a1",
+        "a2"
+      ],
+      "B": [
+        "a1",
+        "a2"
+      ],
+      "C": [
+        "a1",
+        "a2",
+        "a3",
+        "a4"
+      ],
+      "D": [
+        "a1",
+        "a2"
+      ],
+      "E": [
+        "a1",
+        "a2"
+      ],
+      "F": [
+        "a1",
+        "a2"
+      ],
+      "H": [
+        "a1",
+        "a2"
+      ],
+      "G": []
+    },
+    "rows": [
+      "[F, a1, G]",
+      "[H, a1, E]",
+      "[E, a2, D]",
+      "[A, a2, H]",
+      "[A, a2, H]",
+      "[A, a1, G]",
+      "[F, a2, E]",
+      "[E, a2, D]",
+      "[C, a3, B]",
+      "[C, a2, A]",
+      "[F, a2, E]",
+      "[D, a2, F]",
+      "[D, a2, F]",
+      "[D, a1, C]",
+      "[D, a1, C]",
+      "[C, a1, F]",
+      "[F, a1, G]",
+      "[F, a1, G]",
+      "[H, a2, G]",
+      "[C, a4, H]",
+      "[A, a1, G]",
+      "[A, a2, H]",
+      "[C, a3, B]",
+      "[E, a2, D]",
+      "[E, a1, E]",
+      "[C, a2, A]",
+      "[E, a1, E]",
+      "[B, a1, D]",
+      "[C, a4, H]",
+      "[F, a2, E]",
+      "[C, a1, F]",
+      "[C, a1, F]",
+      "[F, a1, G]",
+      "[B, a1, D]",
+      "[E, a2, D]",
+      "[E, a2, D]",
+      "[F, a2, E]",
+      "[B, a2, A]",
+      "[D, a2, F]",
+      "[C, a4, H]",
+      "[C, a1, F]",
+      "[H, a2, G]",
+      "[H, a2, G]",
+      "[C, a2, A]",
+      "[D, a1, C]",
+      "[H, a1, E]",
+      "[A, a2, H]",
+      "[H, a1, E]",
+      "[D, a1, C]",
+      "[D, a2, F]",
+      "[B, a2, A]",
+      "[A, a2, H]",
+      "[C, a3, B]",
+      "[D, a1, C]",
+      "[B, a1, D]",
+      "[F, a2, E]",
+      "[A, a2, H]",
+      "[F, a1, G]",
+      "[B, a1, D]",
+      "[A, a2, H]",
+      "[A, a2, H]",
+      "[B, a2, A]",
+      "[E, a2, D]",
+      "[H, a1, E]",
+      "[E, a1, E]",
+      "[F, a2, E]",
+      "[C, a3, B]",
+      "[B, a2, A]",
+      "[A, a2, H]",
+      "[D, a2, F]",
+      "[B, a1, D]",
+      "[C, a2, A]",
+      "[H, a2, G]",
+      "[H, a1, E]",
+      "[A, a1, G]",
+      "[C, a2, A]",
+      "[B, a2, A]",
+      "[F, a2, E]",
+      "[F, a1, G]",
+      "[F, a2, E]",
+      "[B, a2, A]",
+      "[A, a1, G]",
+      "[D, a1, C]",
+      "[E, a2, D]",
+      "[E, a1, E]",
+      "[B, a2, A]",
+      "[B, a1, D]",
+      "[C, a4, H]",
+      "[H, a2, G]",
+      "[B, a2, A]",
+      "[C, a1, F]",
+      "[C, a4, H]",
+      "[B, a1, D]",
+      "[A, a1, G]",
+      "[E, a1, E]",
+      "[E, a1, E]",
+      "[C, a4, H]",
+      "[E, a1, E]",
+      "[E, a2, D]",
+      "[C, a2, A]",
+      "[C, a4, H]",
+      "[C, a4, H]",
+      "[C, a2, A]",
+      "[D, a2, F]",
+      "[C, a3, B]",
+      "[C, a4, H]",
+      "[C, a2, A]",
+      "[C, a1, F]",
+      "[E, a2, D]",
+      "[D, a1, C]",
+      "[H, a1, E]",
+      "[C, a3, B]",
+      "[D, a2, F]",
+      "[C, a2, A]",
+      "[F, a1, G]",
+      "[C, a3, B]",
+      "[A, a2, H]",
+      "[F, a1, G]",
+      "[D, a1, C]",
+      "[H, a2, G]",
+      "[D, a2, F]",
+      "[C, a3, B]",
+      "[H, a2, G]",
+      "[E, a2, D]",
+      "[B, a2, A]",
+      "[C, a1, F]",
+      "[F, a2, E]",
+      "[H, a2, G]",
+      "[H, a2, G]",
+      "[C, a1, F]",
+      "[H, a2, G]",
+      "[A, a1, G]",
+      "[C, a4, H]",
+      "[D, a1, C]",
+      "[H, a1, E]",
+      "[A, a1, G]",
+      "[B, a1, D]",
+      "[A, a1, G]",
+      "[E, a1, E]",
+      "[F, a1, G]",
+      "[H, a1, E]",
+      "[E, a1, E]",
+      "[H, a1, E]",
+      "[B, a1, D]",
+      "[A, a1, G]",
+      "[E, a1, E]",
+      "[D, a1, C]",
+      "[F, a1, G]",
+      "[A, a1, G]",
+      "[C, a1, F]",
+      "[C, a1, F]",
+      "[D, a2, F]",
+      "[F, a2, E]",
+      "[D, a2, F]",
+      "[B, a2, A]",
+      "[C, a3, B]",
+      "[B, a1, D]",
+      "[C, a3, B]",
+      "[C, a2, A]",
+      "[H, a1, E]"
+    ],
+    "graph": [
+      {
+        "node": "A",
+        "action": "a1",
+        "available": true,
+        "destination": "G",
+        "p_success": 1.0
+      },
+      {
+        "node": "A",
+        "action": "a2",
+        "available": true,
+        "destination": "H",
+        "p_success": 1.0
+      },
+      {
+        "node": "B",
+        "action": "a1",
+        "available": true,
+        "destination": "D",
+        "p_success": 1.0
+      },
+      {
+        "node": "B",
+        "action": "a2",
+        "available": true,
+        "destination": "A",
+        "p_success": 1.0
+      },
+      {
+        "node": "C",
+        "action": "a1",
+        "available": true,
+        "destination": "F",
+        "p_success": 1.0
+      },
+      {
+        "node": "C",
+        "action": "a2",
+        "available": true,
+        "destination": "A",
+        "p_success": 1.0
+      },
+      {
+        "node": "C",
+        "action": "a3",
+        "available": true,
+        "destination": "B",
+        "p_success": 1.0
+      },
+      {
+        "node": "C",
+        "action": "a4",
+        "available": true,
+        "destination": "H",
+        "p_success": 1.0
+      },
+      {
+        "node": "D",
+        "action": "a1",
+        "available": true,
+        "destination": "C",
+        "p_success": 1.0
+      },
+      {
+        "node": "D",
+        "action": "a2",
+        "available": true,
+        "destination": "F",
+        "p_success": 1.0
+      },
+      {
+        "node": "E",
+        "action": "a1",
+        "available": true,
+        "destination": "H",
+        "p_success": 0.0
+      },
+      {
+        "node": "E",
+        "action": "a2",
+        "available": true,
+        "destination": "D",
+        "p_success": 1.0
+      },
+      {
+        "node": "F",
+        "action": "a1",
+        "available": true,
+        "destination": "G",
+        "p_success": 1.0
+      },
+      {
+        "node": "F",
+        "action": "a2",
+        "available": true,
+        "destination": "E",
+        "p_success": 1.0
+      },
+      {
+        "node": "H",
+        "action": "a1",
+        "available": true,
+        "destination": "E",
+        "p_success": 1.0
+      },
+      {
+        "node": "H",
+        "action": "a2",
+        "available": true,
+        "destination": "G",
+        "p_success": 1.0
+      }
+    ],
+    "queried_pairs": [
+      {
+        "node": "D",
+        "action": "a2"
+      },
+      {
+        "node": "E",
+        "action": "a1"
+      },
+      {
+        "node": "E",
+        "action": "a2"
+      },
+      {
+        "node": "F",
+        "action": "a2"
+      },
+      {
+        "node": "H",
+        "action": "a1"
+      }
+    ]
+  },
+  "target": [
+    "E",
+    "a1"
+  ],
+  "controls": [
+    {
+      "node": "D",
+      "action": "a2"
+    },
+    {
+      "node": "E",
+      "action": "a2"
+    },
+    {
+      "node": "F",
+      "action": "a2"
+    },
+    {
+      "node": "H",
+      "action": "a1"
+    }
+  ],
+  "legacy_prompt_hashes": {
+    "graph_ab": [
+      "52b24ef13a30723b502b0f6ca1127cf9896bb774150f3912748813dc365e72f8",
+      "32a49d22d955dd87515d0411c1bfca02f1e41635b0e38b814e4b2a01bc062472"
+    ],
+    "graph_a": [
+      "52b24ef13a30723b502b0f6ca1127cf9896bb774150f3912748813dc365e72f8",
+      "cbd670bf511e4aff62f943abd28235525eac58208d291336fc13d1e83615dbdb"
+    ],
+    "logs_only": [
+      "031da09d2cefefe545292a4ed2b09c0e523a417a2e4a338742994a14316fa8ed",
+      "cbd670bf511e4aff62f943abd28235525eac58208d291336fc13d1e83615dbdb"
+    ]
+  }
+}

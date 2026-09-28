@@ -294,11 +294,11 @@ def no_secrets(value):
     visit(value, "root")
 
 
-def context_bound(messages, config, reserve_answer=0):
+def context_bound(messages, config, reserve_answer=0, *, output_tokens=8192, allow_system=False):
     """Conservative bound, NOT an exact tokenizer count. Source must justify it."""
     context = config["context"]
     if not messages or any(set(m) != {"role", "content"}
-                           or m["role"] not in ("user", "assistant")
+                           or m["role"] not in (("system", "user", "assistant") if allow_system else ("user", "assistant"))
                            or not isinstance(m["content"], str) for m in messages):
         raise ValueError("context check needs complete text messages")
     if context.get("method") != "utf8_upper_bound" or not context.get("source"):
@@ -316,9 +316,11 @@ def context_bound(messages, config, reserve_answer=0):
         raise ValueError("missing bound for replay of the unseen A answer")
     input_bound = sum(len(m["content"].encode()) + overhead for m in messages)
     input_bound += math.ceil(reserve_answer * expansion)
-    total = input_bound + 8192
+    if type(output_tokens) is not int or output_tokens not in (4096, 8192):
+        raise ValueError("invalid stage output allowance")
+    total = input_bound + output_tokens
     return {"method": context["method"], "input_tokens_upper_bound": input_bound,
-            "requested_output_tokens": 8192, "total_upper_bound": total,
+            "requested_output_tokens": output_tokens, "total_upper_bound": total,
             "context_tokens": context["tokens"], "fits": total <= context["tokens"],
             "source": context["source"]}
 
@@ -410,7 +412,9 @@ def _local_snapshot(config, key):
     return identity
 
 
-def local_count_record(body, config, rendered, tokens, identity):
+def local_count_record(body, config, rendered, tokens, identity, *, output_tokens=8192):
+    if type(output_tokens) is not int or output_tokens not in (4096, 8192):
+        raise ValueError("invalid stage output allowance")
     if (not isinstance(rendered, str) or not rendered or not isinstance(tokens, list)
             or not tokens or any(type(t) is not int or t < 0 for t in tokens)):
         raise ValueError("invalid tokenizer result")
@@ -419,17 +423,19 @@ def local_count_record(body, config, rendered, tokens, identity):
         "identity": identity, "counting_settings": config["context"]["counting_settings"],
         "rendered_prompt": rendered, "rendered_sha256": pilot.sha256_text(rendered),
         "token_ids": tokens, "token_ids_sha256": pilot._canonical_sha256(tokens),
-        "input_tokens": len(tokens), "requested_output_tokens": 8192,
-        "context_tokens": 32768, "fits": len(tokens) + 8192 <= 32768}
+        "input_tokens": len(tokens), "requested_output_tokens": output_tokens,
+        "context_tokens": 32768, "fits": len(tokens) + output_tokens <= 32768}
 
 
-def count_local_request(body, config):
+def count_local_request(body, config, *, output_tokens=8192, allow_system=False):
     """Only metadata, template rendering and tokenization; never generation."""
     validate_local_context(config)
-    if (body.get("model") != config["model"] or body.get("max_tokens") != 8192
+    if (body.get("model") != config["model"] or body.get("max_tokens") != output_tokens
+            or type(output_tokens) is not int or output_tokens not in (4096, 8192)
             or body.get("reasoning") != config["effective"]["reasoning_mode"]
             or not body.get("messages") or any(set(m) != {"role", "content"}
-                or m["role"] not in ("user", "assistant") or not isinstance(m["content"], str)
+                or m["role"] not in (("system", "user", "assistant") if allow_system else ("user", "assistant"))
+                or not isinstance(m["content"], str)
                 for m in body["messages"])):
         raise ValueError("local count request mismatch")
     key = os.environ.get(config["context"]["credential_env"])
@@ -447,14 +453,14 @@ def count_local_request(body, config):
         "add_special": settings["add_special"], "parse_special": settings["parse_special"]}, key)["tokens"]
     if _local_snapshot(config, key) != identity:
         raise ValueError("local deployment identity changed during counting")
-    return local_count_record(body, config, rendered, tokens, identity)
+    return local_count_record(body, config, rendered, tokens, identity, output_tokens=output_tokens)
 
 
-def audit_local_count(record, body, config):
+def audit_local_count(record, body, config, *, output_tokens=8192):
     """Offline evidence consistency, not a claim of independently rerunning the tokenizer."""
     validate_local_context(config)
     expected = local_count_record(body, config, record["rendered_prompt"], record["token_ids"],
-                                  config["context"]["identity"])
+                                  config["context"]["identity"], output_tokens=output_tokens)
     return record == expected and expected["fits"]
 
 
