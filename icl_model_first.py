@@ -7,6 +7,8 @@ import math
 from pathlib import Path
 
 PROTOCOL = 'icl_model_first_v1'
+# Separate from PROTOCOL, which also fixes the route-query selection namespace.
+HISTORY_POLICY = 'retained_reports_v2'
 ARMS = ('model_first', 'task_only', 'graph_given')
 ROOT = Path(__file__).resolve().parent / "fixtures" / "icl_model_first"
 SYSTEM = 'Follow the instructions in each message and use the supplied evidence.'
@@ -125,8 +127,8 @@ def prompts(world, period, arm):
 
 def schedule(world, arm, answers):
     """Returns actual request histories with supplied synthetic/saved answer text.
-Readout runs after task but forks from before the current task. Its answers
-are never inserted in main history. Private provider reasoning is not input.
+Every question and final answer is retained, including transition reports.
+Private provider reasoning is not input.
 """
     history=[{'role':'system','content':SYSTEM}]; calls=[]
     for period in ('A','B'):
@@ -135,11 +137,12 @@ are never inserted in main history. Private provider reasoning is not input.
             history.append({'role':'user','content':p['model']})
             calls.append({'id':period+'_model','max_output_tokens':4096,'messages':copy.deepcopy(history)})
             history.append({'role':'assistant','content':answers[period+'_model']})
-        before_task=copy.deepcopy(history)
         history.append({'role':'user','content':p['task']})
         calls.append({'id':period+'_task','max_output_tokens':4096 if arm=='model_first' else 8192,'messages':copy.deepcopy(history)})
         history.append({'role':'assistant','content':answers[period+'_task']})
-        calls.append({'id':period+'_readout','max_output_tokens':4096,'messages':before_task+[{'role':'user','content':p['readout']}]})
+        history.append({'role':'user','content':p['readout']})
+        calls.append({'id':period+'_readout','max_output_tokens':4096,'messages':copy.deepcopy(history)})
+        history.append({'role':'assistant','content':answers[period+'_readout']})
     return calls
 
 def shortest(rows, start, goal):
@@ -238,6 +241,8 @@ def verify_prompts(w):
 
 
 def verify_histories(w):
+    if lock().get('history_policy') != HISTORY_POLICY:
+        raise ValueError('locked history policy drift')
     answers = {p + '_' + s: f'SYNTHETIC {p}_{s}; NOT A MODEL RESULT'
                for p in ('A', 'B') for s in ('model', 'task', 'readout')}
     result = {}

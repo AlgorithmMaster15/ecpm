@@ -46,6 +46,20 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(d.prompts(w,'A',arm),d.prompts(changed,'A',arm))
         self.assertEqual(d.queries(w),d.queries(changed))
 
+    def test_no_future_information_in_a_histories(self):
+        w=d.load(8); changed=copy.deepcopy(w)
+        changed['B']['rows']=['FUTURE EVIDENCE SENTINEL']
+        answers={p+'_'+s:f'answer {p}_{s}' for p in ('A','B') for s in ('model','task','readout')}
+        future=dict(answers)
+        for key in future:
+            if key.startswith('B'):
+                future[key]='FUTURE ANSWER SENTINEL'
+        for arm in d.ARMS:
+            before=[c for c in d.schedule(w,arm,answers) if c['id'].startswith('A')]
+            after=[c for c in d.schedule(changed,arm,future) if c['id'].startswith('A')]
+            self.assertEqual(before,after)
+            self.assertNotIn('FUTURE',json.dumps(after))
+
     def test_no_representation_or_route_queries_before_construction(self):
         w=d.load(8)
         p=d.prompts(w,'A','model_first')['model'].lower()
@@ -54,30 +68,41 @@ class ContractTests(unittest.TestCase):
         self.assertIn('whatever representation',p)
         self.assertNotIn('construct a model',d.prompts(w,'A','task_only')['task'])
 
-    def test_common_tasks_and_measurement_text(self):
+    def test_common_tasks_and_transition_report_text(self):
         for p in ('A','B'):
             w=d.load(8)
             for arm in d.ARMS:
                 self.assertTrue(d.prompts(w,p,arm)['task'].endswith(d.task(w,p)))
                 self.assertTrue(d.prompts(w,p,arm)['readout'].endswith(d.readout(w,p)))
 
-    def test_measurement_branch_excludes_current_tasks(self):
-        w=d.load(8)
+    def test_complete_history_including_reports_no_branches(self):
         answers={p+'_'+s:f'UNIQUE_ANSWER_{p}_{s}' for p in ('A','B') for s in ('model','task','readout')}
-        for arm in d.ARMS:
-            calls=d.schedule(w,arm,answers)
-            for call in calls:
-                texts=[x['content'] for x in call['messages']]
-                self.assertFalse(any(answers[p+'_readout'] in t for p in ('A','B') for t in texts))
-                if call['id'].endswith('readout'):
-                    p=call['id'][0]
-                    self.assertNotIn(answers[p+'_task'],texts)
-                    self.assertNotIn(d.task(w,p),texts)
-                    self.assertNotIn('Route queries:',texts[-1])
-                if call['id'].startswith('B_'):
-                    self.assertIn(answers['A_task'],texts)
-                if arm=='model_first' and call['id'].endswith(('task','readout')):
-                    self.assertIn(answers[call['id'][0]+'_model'],texts)
+        for seed in (8,13,25):
+            w=d.load(seed)
+            for arm in d.ARMS:
+                calls=d.schedule(w,arm,answers)
+                expected=[{'role':'system','content':d.SYSTEM}]
+                for call in calls:
+                    p,stage=call['id'].split('_',1)
+                    expected.append({'role':'user','content':d.prompts(w,p,arm)[stage]})
+                    self.assertEqual(call['messages'],expected)
+                    texts=[x['content'] for x in call['messages']]
+                    if p=='B':
+                        self.assertIn(d.prompts(w,'A',arm)['readout'],texts)
+                        self.assertIn(answers['A_readout'],texts)
+                    else:
+                        self.assertFalse(any(answers['B_'+s] in texts for s in ('model','task','readout')))
+                    if stage=='readout':
+                        self.assertIn(answers[p+'_task'],texts)
+                    expected.append({'role':'assistant','content':answers[call['id']]})
+
+    def test_history_identity_does_not_reselect_queries(self):
+        expected={8:[('G','D'),('C','E'),('H','E'),('A','B')],
+                  13:[('H','E'),('G','B'),('G','H'),('C','F')],
+                  25:[('E','G'),('A','G'),('D','A'),('C','H')]}
+        self.assertEqual(d.HISTORY_POLICY,'retained_reports_v2')
+        for seed,pairs in expected.items():
+            self.assertEqual([(q['start'],q['goal']) for q in d.queries(d.load(seed))],pairs)
 
     def test_matched_allowances_and_request_count(self):
         w=d.load(8); answers={p+'_'+s:'visible answer' for p in ('A','B') for s in ('model','task','readout')}

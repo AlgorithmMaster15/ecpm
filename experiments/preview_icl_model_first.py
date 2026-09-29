@@ -20,26 +20,56 @@ def save(path, value):
         stream.write(value if isinstance(value, str) else json.dumps(value, indent=2, sort_keys=True) + '\n')
 
 
-def plan():
-    return {'protocol': design.PROTOCOL, 'status': 'offline only; deployment not ready',
-            'first_graph_seed': 8, 'repeats_per_condition': 3, 'reasoning': 'off',
-            'blocks': [{'condition': arm, 'conversations': 3,
-                        'requests': 3 * (6 if arm == 'model_first' else 4),
-                        'main_output_allowance': 3 * 16384, 'measurement_output_allowance': 3 * 8192}
+def plan(repeats=1):
+    if type(repeats) is not int or repeats not in (1, 3):
+        raise ValueError('one or three repeats required')
+    return {'protocol': design.PROTOCOL, 'history_policy': design.HISTORY_POLICY,
+            'status': 'offline only; deployment not ready',
+            'first_graph_seed': 8, 'repeats_per_condition': repeats,
+            'sampling_seed_labels': list(range(repeats)), 'reasoning': 'off',
+            'blocks': [{'condition': arm, 'conversations': repeats,
+                        'requests': repeats * (6 if arm == 'model_first' else 4),
+                        'main_output_allowance': repeats * 24576,
+                        'model_and_task_output_allowance': repeats * 16384,
+                        'transition_report_output_allowance': repeats * 8192}
                        for arm in design.ARMS],
-            'conversations_per_model': 9, 'requests_per_model': 42,
-            'maximum_completion_tokens_per_model': 9 * 24576,
-            'all_three_worlds_if_later_authorized': {'conversations': 27, 'requests': 126},
+            'conversations_per_model': 3 * repeats, 'requests_per_model': 14 * repeats,
+            'maximum_completion_tokens_per_model': 3 * repeats * 24576,
+            'all_three_worlds_if_later_authorized': {'conversations': 9 * repeats, 'requests': 42 * repeats},
             'preflights': 'excluded; separately authorized only',
             'input_tokens': None, 'cost_usd': None, 'cost_status': 'unavailable',
             'assumptions': ['Completion counts are ceilings, not expected usage.',
-                            'Input depends on actual full model/task answers and verified template accounting.',
+                            'Input includes every preceding question and actual final model/task/transition-report answer, with verified template accounting.',
+                            'Earlier branched-history input estimates do not apply to this longer retained history.',
                             'No previous answer bounds every future answer; count each actual request.',
                             'Uncached USD = input_tokens * input_rate / 1e6 + completion_tokens * output_rate / 1e6.',
-                            'Main workflow and readout usage/cost must be reported separately.'],
+                            'All requests belong to main; model/task and transition-report usage are subtotals, not extra branches.'],
             'deployment': {'provider': None, 'endpoint': None, 'exact_model': None,
                            'tokenizer_template_verified': False, 'stage_limits_verified': False,
                            'input_usd_per_million': None, 'output_usd_per_million': None}}
+
+
+def conversation_example(world, arm, answers):
+    """Readable complete transcript; request ranges show retained input exactly."""
+    calls = design.schedule(world, arm, answers)
+    lines = [f'# Seed {world["seed"]}: {arm}', '',
+             f'History policy: `{design.HISTORY_POLICY}`. SYNTHETIC REFERENCE, NOT MODEL OUTPUT.', '',
+             'Every request contains the system message and every preceding question and final answer.',
+             'Transition reports remain in main history. No provider-private reasoning is replayed.', '',
+             '| Request | Input messages | Input text characters | Output allowance |',
+             '| --- | --- | --- | --- |']
+    for call in calls:
+        lines.append(f'| {call["id"]} | 1..{len(call["messages"])} | '
+                     f'{sum(len(m["content"]) for m in call["messages"])} | {call["max_output_tokens"]} |')
+    lines += ['', 'Character counts are not tokenizer counts or future-answer bounds. Actual request',
+              'admission needs verified template/tokenizer or hosted context evidence.', '',
+              '## Message 1: system', '', '```text', design.SYSTEM, '```', '']
+    for index, call in enumerate(calls):
+        lines += [f'## Message {2 * index + 2}: user ({call["id"]})', '',
+                  '```text', call['messages'][-1]['content'], '```', '',
+                  f'## Message {2 * index + 3}: assistant ({call["id"]})', '',
+                  '```text', answers[call['id']], '```', '']
+    return '\n'.join(lines)
 
 
 def generate(out):
@@ -53,12 +83,19 @@ def generate(out):
         manifest.update(design.verify_prompts(world))
         history_checks.update(design.verify_histories(world))
         answers = runner.synthetic_answers(world)
+        locked_answers = {p + '_' + s: f'SYNTHETIC {p}_{s}; NOT A MODEL RESULT'
+                          for p in ('A', 'B') for s in ('model', 'task', 'readout')}
         for arm in design.ARMS:
             for period in ('A', 'B'):
                 for stage, text in design.prompts(world, period, arm).items():
                     save(out / 'prompts' / f'seed_{seed}' / arm / f'{period}_{stage}.txt', text + '\n')
+            raw_example = json.dumps(design.schedule(world, arm, locked_answers), indent=2) + '\n'
+            save(out / 'prompts' / f'seed_{seed}' / arm / 'request_history_example.json', raw_example)
             history = design.schedule(world, arm, answers)
-            save(out / 'histories' / f'seed_{seed}_{arm}.json', {'synthetic': True, 'requests': history})
+            save(out / 'histories' / f'seed_{seed}_{arm}.json', {
+                'synthetic': True, 'history_policy': design.HISTORY_POLICY, 'requests': history})
+            if seed == 8:
+                save(out / 'examples' / f'seed_8_{arm}.md', conversation_example(world, arm, answers))
             turns = {key: {'raw_response': value} for key, value in answers.items()}
             scored = design.score_conversation(world, arm, turns)
             for p in ('A', 'B'):
@@ -94,14 +131,16 @@ def generate(out):
                            'bundle_has_one_extra_trailing_LF' if extra_lf_match else 'unresolved',
                        'published_bytes': len(raw),
                        'bundle_bytes': len(raw) + 1 if extra_lf_match else len(raw) if expected == actual else None})
-    report = {'protocol': design.PROTOCOL, 'model_calls': 0, 'deployment_ready': False,
+    report = {'protocol': design.PROTOCOL, 'history_policy': design.HISTORY_POLICY,
+              'model_calls': 0, 'deployment_ready': False,
               'base_commit': design.lock()['source_commit'], 'prompt_files_exact': len(manifest),
               'prompt_checks': manifest, 'reference_checks': checks,
               'locked_history_checks': history_checks,
-              'source_reconciliation': source, 'plan': plan()}
+              'source_reconciliation': source, 'plan': plan(), 'later_expansion_plan': plan(3)}
     save(out / 'offline_report.json', report)
     save(out / 'references.json', references)
     save(out / 'run_plan.json', plan())
+    save(out / 'later_expansion_plan.json', plan(3))
     return report
 
 
@@ -116,7 +155,7 @@ def compatible_identity(artifact):
     repeat = identity.pop('repeat')
     seed = identity.pop('repeat_seed_label')
     if type(repeat) is not int or repeat not in (1, 2, 3) or type(seed) is not int or seed != repeat - 1:
-        raise ValueError('invalid repeat identity; expected three repeats labelled 0/1/2')
+        raise ValueError('invalid repeat identity; allowed repeat labels are 0/1/2')
     stage_settings = {cap: dict(values) for cap, values in identity['stage_settings'].items()}
     for values in stage_settings.values():
         if 'seed' in values:

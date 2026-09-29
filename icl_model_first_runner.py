@@ -1,4 +1,4 @@
-"""OFF-only model-first orchestration. No retries, history repair or readout replay."""
+"""OFF-only model-first orchestration with retained reports. No retries or repair."""
 
 import copy
 import json
@@ -34,16 +34,15 @@ def requests(world, arm):
             answer = yield {'id': period + '_model', 'max_output_tokens': 4096,
                             'messages': copy.deepcopy(history + [msg])}
             history += [msg, {'role': 'assistant', 'content': answer}]
-        snapshot = copy.deepcopy(history)
         msg = {'role': 'user', 'content': texts['task']}
         answer = yield {'id': period + '_task',
                         'max_output_tokens': 4096 if arm == 'model_first' else 8192,
                         'messages': copy.deepcopy(history + [msg])}
         history += [msg, {'role': 'assistant', 'content': answer}]
-        # Ignore the measurement response. Neither its question nor its answer
-        # is appended to main history. snapshot is not a shared mutable list.
-        yield {'id': period + '_readout', 'max_output_tokens': 4096,
-               'messages': snapshot + [{'role': 'user', 'content': texts['readout']}]}
+        msg = {'role': 'user', 'content': texts['readout']}
+        answer = yield {'id': period + '_readout', 'max_output_tokens': 4096,
+                        'messages': copy.deepcopy(history + [msg])}
+        history += [msg, {'role': 'assistant', 'content': answer}]
 
 
 def validate_config(wrapper, profile):
@@ -53,10 +52,11 @@ def validate_config(wrapper, profile):
     controls.validate_deployment(config, profile, 'off')
     evidence = wrapper['model_first']
     if (evidence.get('protocol') != design.PROTOCOL
+            or evidence.get('history_policy') != design.HISTORY_POLICY
             or evidence.get('output_allowances') != [4096, 8192]
             or any(not isinstance(evidence.get(k), str) or not evidence[k].strip()
                    for k in ('stage_limits_source', 'system_message_source', 'context_source'))):
-        raise ValueError('stage-specific output and system-message/context evidence required')
+        raise ValueError('history policy, stage-specific output and system-message/context evidence required')
     if profile == 'gemma_e4b' and not controls.local_context(config):
         raise ValueError('local actual-request tokenizer counting required')
     if profile in controls.HOSTED_PROFILES:
@@ -187,7 +187,7 @@ def call_provider(body, config, timeout):
 
 def identity(world, arm, repeat, profile, model, config_wrapper, provider):
     config = config_wrapper['deployment'] if config_wrapper else None
-    return {'protocol': design.PROTOCOL, 'scorer': design.SCORER,
+    return {'protocol': design.PROTOCOL, 'history_policy': design.HISTORY_POLICY, 'scorer': design.SCORER,
             'implementation_commit': pilot.git_head(), 'implementation_dirty': pilot._git_dirty(),
             'graph_seed': world['seed'], 'world_sha256': canonical(world), 'condition': arm,
             'queries': design.queries(world), 'repeat': repeat, 'repeat_seed_label': repeat - 1,
@@ -290,7 +290,7 @@ def run_once(world, arm, repeat, args, wrapper, outdir):
 
 
 def audit_artifact(a):
-    """Offline audit of raw envelopes, immutable branch history and controls."""
+    """Offline audit of raw envelopes, complete retained history and controls."""
     checks = {'complete': False, 'identity': False, 'history': False,
               'hashes': False, 'persistence': False, 'responses': False, 'no_secrets': False}
     try:
@@ -299,6 +299,7 @@ def audit_artifact(a):
         config = validate_config(wrapper, i['profile']) if wrapper else None
         dry = i['provider'] == 'dry-run'
         checks['identity'] = (i['protocol'] == design.PROTOCOL and i['scorer'] == design.SCORER
+            and i.get('history_policy') == design.HISTORY_POLICY
             and i['reasoning_mode'] == 'off' and i['condition'] in design.ARMS
             and i['repeat'] in (1, 2, 3) and i['repeat_seed_label'] == i['repeat'] - 1
             and i['world_sha256'] == canonical(world) and world == design.load(i['graph_seed'])
@@ -344,14 +345,17 @@ def write_summary(outdir, expected=3):
     records = [json.loads(p.read_text()) for p in files]
     rows = [{'file': p.name, 'run_id': a['run_id'], 'state': a['state'], 'audit': audit_artifact(a)}
             for p, a in zip(files, records)]
-    summary = {'protocol': design.PROTOCOL, 'expected_conversations': expected,
+    summary = {'protocol': design.PROTOCOL, 'history_policy': design.HISTORY_POLICY,
+               'expected_conversations': expected,
                'completed_conversations': sum(a['state'] == 'completed' for a in records),
                'saved_responses': sum('provider_response_raw' in t for a in records for t in a['turns'].values()),
                'runs': rows, 'operational_gate_pass': len(rows) == expected and all(all(r['audit'].values()) for r in rows)}
     summary['usage_by_workflow'] = {}
-    for group in ('main', 'measurement'):
+    # All stages are main conversation. The other entries are disjoint subtotals.
+    for group in ('main', 'model_and_task', 'transition_report'):
         turns = [t for a in records for name, t in a['turns'].items()
-                 if (name.endswith('_readout')) == (group == 'measurement') and 'provider_usage' in t]
+                 if (group == 'main' or name.endswith('_readout') == (group == 'transition_report'))
+                 and 'provider_usage' in t]
         usage = {}
         for field in ('prompt_tokens', 'completion_tokens'):
             values = [t['provider_usage'].get(field) for t in turns]
@@ -365,20 +369,24 @@ def write_summary(outdir, expected=3):
     return summary
 
 
-def block_cost_plan(world, arm, wrapper):
+def block_cost_plan(world, arm, wrapper, repeats=3):
     """Conservative ceiling from the admitted context, not a token-use forecast."""
+    if type(repeats) is not int or repeats not in (1, 3):
+        raise ValueError('one or three repeats required')
     calls = design.schedule(world, arm, synthetic_answers(world))
-    completion = 3 * sum(c['max_output_tokens'] for c in calls)
+    completion = repeats * sum(c['max_output_tokens'] for c in calls)
     if wrapper is None:
         return {'status': 'unavailable', 'reason': 'no verified deployment/rates',
-                'requests': len(calls) * 3, 'maximum_completion_tokens': completion}
+                'history_policy': design.HISTORY_POLICY,
+                'repeats': repeats, 'requests': len(calls) * repeats, 'maximum_completion_tokens': completion}
     config = wrapper['deployment']
-    ceiling = 3 * sum(config['context']['tokens'] - c['max_output_tokens'] for c in calls)
+    ceiling = repeats * sum(config['context']['tokens'] - c['max_output_tokens'] for c in calls)
     prices = config['pricing']
     result = {'status': 'local_unpriced' if config['profile'] == 'gemma_e4b' else 'estimated',
-              'requests': len(calls) * 3, 'maximum_completion_tokens': completion,
+              'history_policy': design.HISTORY_POLICY,
+              'repeats': repeats, 'requests': len(calls) * repeats, 'maximum_completion_tokens': completion,
               'admitted_input_token_ceiling': ceiling,
-              'assumption': 'every request fills its admitted context and completion allowance; uncached prices; preflight excluded'}
+              'assumption': 'every complete retained-history request fills its admitted context and completion allowance; uncached prices; preflight excluded'}
     if config['profile'] in controls.HOSTED_PROFILES:
         result.update(usd_ceiling=(ceiling * prices['input_per_million'] + completion * prices['output_per_million']) / 1e6,
                       rate_source=prices['source'])
@@ -388,9 +396,10 @@ def block_cost_plan(world, arm, wrapper):
 def run_suite(sc, args, outdir):
     if args.model_first_condition not in design.ARMS or args.request_profile not in controls.MODELS:
         raise ValueError('explicit model-first condition and request profile required')
-    if (args.mode != 'det' or args.pilot_type != 'passive' or args.repeats != 3
-            or args.sampling_seeds != [0, 1, 2] or args.max_tokens != 8192 or args.reasoning_mode != 'off'):
-        raise ValueError('locked pilot: passive det, OFF, three repeats 0/1/2, 8192 workflow allowance')
+    if (args.mode != 'det' or args.pilot_type != 'passive' or type(args.repeats) is not int
+            or args.repeats not in (1, 3) or args.sampling_seeds != list(range(args.repeats))
+            or args.max_tokens != 8192 or args.reasoning_mode != 'off'):
+        raise ValueError('locked pilot: passive det, OFF, one repeat 0 or three repeats 0/1/2, 8192 workflow allowance')
     if (args.graph_condition or args.off_reference or args.reasoning_control_json or args.reasoning_control_source
             or args.temperature != 0 or args.top_p is not None or args.top_k is not None
             or args.sampling_seed_support != 'auto' or args.provider not in ('dry-run', 'openai')):
@@ -413,15 +422,15 @@ def run_suite(sc, args, outdir):
             raise ValueError('exact deployment model/endpoint mismatch')
     elif args.deployment_config:
         raise ValueError('dry runs must not use private readiness configurations')
-    planned_cost = block_cost_plan(world, args.model_first_condition, wrapper)
+    planned_cost = block_cost_plan(world, args.model_first_condition, wrapper, args.repeats)
     print(json.dumps({'prelaunch_cost_plan': planned_cost}, sort_keys=True))
     Path(outdir).mkdir(parents=True, exist_ok=False)
     try:
-        for repeat in (1, 2, 3):
+        for repeat in range(1, args.repeats + 1):
             a = run_once(world, args.model_first_condition, repeat, args, wrapper, outdir)
             print(a['run_id'] + ': completed' + (' SYNTHETIC' if a['synthetic'] else ''))
     finally:
-        summary = write_summary(outdir)
+        summary = write_summary(outdir, expected=args.repeats)
         summary['prelaunch_cost_plan'] = planned_cost
         pilot._write_json_atomic(str(Path(outdir) / 'summary.json'), summary)
     print('operational gate: ' + ('PASS' if summary['operational_gate_pass'] else 'FAIL'))

@@ -29,7 +29,8 @@ def wrapper(local=True, profile='gemma_e4b'):
     if profile in controls.HOSTED_PROFILES:
         c['pricing'] = {'input_per_million': 1, 'output_per_million': 2, 'source': 'SYNTHETIC TEST ONLY'}
     return {'deployment': c,
-            'model_first': {'protocol': m.PROTOCOL, 'output_allowances': [4096, 8192],
+            'model_first': {'protocol': m.PROTOCOL, 'history_policy': m.HISTORY_POLICY,
+                            'output_allowances': [4096, 8192],
                             'stage_limits_source': 'SYNTHETIC TEST ONLY',
                             'system_message_source': 'SYNTHETIC TEST ONLY',
                             'context_source': 'SYNTHETIC TEST ONLY'}}
@@ -68,9 +69,25 @@ class ContractIntegration(unittest.TestCase):
     def test_nine_locked_history_examples(self):
         self.assertEqual(sum(len(m.verify_histories(m.load(s))) for s in (8, 13, 25)), 9)
 
-    def test_coroutine_matches_contract_and_branch_isolation(self):
+    def test_history_defect_and_policy_drift_caught(self):
+        real = m.schedule
+        def branched(world, arm, answers):
+            calls = real(world, arm, answers)
+            for call in calls:
+                if call['id'].startswith('B'):
+                    call['messages'] = [x for x in call['messages'] if x['content'] != answers['A_readout']]
+            return calls
+        with patch.object(m, 'schedule', side_effect=branched):
+            with self.assertRaisesRegex(ValueError, 'history example drift'):
+                m.verify_histories(m.load(8))
+        with patch.object(m, 'HISTORY_POLICY', 'wrong policy'):
+            with self.assertRaisesRegex(ValueError, 'history policy drift'):
+                m.verify_histories(m.load(8))
+
+    def test_coroutine_matches_complete_contract_history(self):
         w, answers = reference()
         answers['A_task'] = '  malformed complete A text\n\t [not JSON] '
+        answers['A_readout'] = ' \tmalformed A REPORT {\n '
         for arm in m.ARMS:
             flow = runner.requests(w, arm)
             actual = []
@@ -85,7 +102,9 @@ class ContractIntegration(unittest.TestCase):
             for c in actual:
                 if c['id'].startswith('B'):
                     self.assertIn(answers['A_task'], [x['content'] for x in c['messages']])
-                self.assertFalse(any(answers[k] in x['content'] for k in ('A_readout', 'B_readout') for x in c['messages']))
+                    self.assertIn(answers['A_readout'], [x['content'] for x in c['messages']])
+                    self.assertIn(m.prompts(w, 'A', arm)['readout'], [x['content'] for x in c['messages']])
+                self.assertNotIn(answers['B_readout'], [x['content'] for x in c['messages']])
             saved = copy.deepcopy(actual[-1])
             actual[0]['messages'][0]['content'] = 'MUTATION'
             self.assertEqual(actual[-1], saved)
@@ -95,16 +114,32 @@ class ContractIntegration(unittest.TestCase):
             r = generate(Path(t) / 'review')
             self.assertEqual(r['prompt_files_exact'], 42)
             self.assertEqual(len(list((Path(t) / 'review/prompts').rglob('*.txt'))), 42)
+            for name, expected in r['locked_history_checks'].items():
+                self.assertEqual(m.digest((Path(t) / 'review' / name).read_text()), expected)
+            for arm in m.ARMS:
+                text = (Path(t) / 'review/examples' / f'seed_8_{arm}.md').read_text()
+                world, answers = reference()
+                for call in m.schedule(world, arm, answers):
+                    self.assertIn(call['messages'][-1]['content'], text)
+                    self.assertIn(answers[call['id']], text)
+                self.assertIn(m.HISTORY_POLICY, text)
             source = {s['file']: s for s in r['source_reconciliation']}
             for name in ('resource_mdp.py', 'ecpm_parser.py', 'ecpm_baseline.py'):
                 self.assertTrue(source[name]['reconciled'])
                 self.assertFalse(source[name]['match'])
                 self.assertEqual(source[name]['relationship'], 'bundle_has_one_extra_trailing_LF')
                 self.assertEqual(source[name]['bundle_bytes'], source[name]['published_bytes'] + 1)
-        self.assertEqual(plan()['requests_per_model'], 42)
-        self.assertEqual(plan()['maximum_completion_tokens_per_model'], 221184)
+        self.assertEqual(plan()['requests_per_model'], 14)
+        self.assertEqual(plan()['conversations_per_model'], 3)
+        self.assertEqual(plan()['maximum_completion_tokens_per_model'], 73728)
+        self.assertEqual(plan(3)['requests_per_model'], 42)
+        self.assertEqual(plan(3)['conversations_per_model'], 9)
+        self.assertEqual(plan(3)['maximum_completion_tokens_per_model'], 221184)
         self.assertIsNone(plan()['cost_usd'])
         self.assertIsNone(plan()['input_tokens'])
+        self.assertEqual(plan()['history_policy'], m.HISTORY_POLICY)
+        for b in plan()['blocks']:
+            self.assertEqual(b['main_output_allowance'], b['model_and_task_output_allowance'] + b['transition_report_output_allowance'])
 
 
 class ParserScorer(unittest.TestCase):
@@ -325,6 +360,60 @@ class ParserScorer(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_one_and_three_repeat_suites_and_expected_counts(self):
+        sc = {**pilot.SCENARIO_DEFAULTS, **pilot.SCENARIOS['icl_det_gate_seed8']}
+        for repeats, total in ((1, 14), (3, 42)):
+            responses = conversations = 0
+            with tempfile.TemporaryDirectory() as t:
+                for arm in m.ARMS:
+                    a = args(arm)
+                    a.repeats, a.sampling_seeds = repeats, list(range(repeats))
+                    out = Path(t) / arm
+                    with patch('builtins.print'):
+                        result = runner.run_suite(sc, a, out)
+                    self.assertTrue(result['operational_gate_pass'])
+                    self.assertEqual(result['expected_conversations'], repeats)
+                    self.assertEqual(result['completed_conversations'], repeats)
+                    expected_responses = repeats * (6 if arm == 'model_first' else 4)
+                    self.assertEqual(result['saved_responses'], expected_responses)
+                    self.assertEqual(result['prelaunch_cost_plan']['requests'], expected_responses)
+                    self.assertEqual(result['prelaunch_cost_plan']['maximum_completion_tokens'], repeats * 24576)
+                    records = [json.loads(p.read_text()) for p in out.glob('icl*.json')]
+                    self.assertEqual(sorted(r['identity']['repeat_seed_label'] for r in records), list(range(repeats)))
+                    conversations += len(records)
+                    responses += result['saved_responses']
+                    # A mismatched expected count must fail, not appear complete.
+                    self.assertFalse(runner.write_summary(out, expected=4 - repeats)['operational_gate_pass'])
+            self.assertEqual(conversations, 3 * repeats)
+            self.assertEqual(responses, total)
+
+    def test_invalid_repeat_seed_combinations_stop_before_artifacts(self):
+        sc = {**pilot.SCENARIO_DEFAULTS, **pilot.SCENARIOS['icl_det_gate_seed8']}
+        for repeats, seeds in ((0, []), (2, [0, 1]), (4, [0, 1, 2, 3]),
+                               (1, [1]), (1, [0, 1, 2]), (3, [0]), (3, [0, 0, 2])):
+            a = args()
+            a.repeats, a.sampling_seeds = repeats, seeds
+            with tempfile.TemporaryDirectory() as t, patch.object(runner, 'call_provider') as provider:
+                out = Path(t) / 'unused'
+                with self.assertRaisesRegex(ValueError, 'one repeat 0 or three repeats'):
+                    runner.run_suite(sc, a, out)
+                self.assertFalse(out.exists())
+                provider.assert_not_called()
+
+    def test_one_repeat_cost_plan_scales_without_changing_allowances(self):
+        for arm in m.ARMS:
+            for config in (None, wrapper(), wrapper(False, 'sol')):
+                one = runner.block_cost_plan(m.load(8), arm, config, repeats=1)
+                three = runner.block_cost_plan(m.load(8), arm, config)
+                for field in ('requests', 'maximum_completion_tokens', 'admitted_input_token_ceiling', 'usd_ceiling'):
+                    if field in one:
+                        self.assertAlmostEqual(three[field], 3 * one[field])
+            for repeats in (0, 2, 4, True):
+                with self.assertRaisesRegex(ValueError, 'one or three'):
+                    runner.block_cost_plan(m.load(8), arm, None, repeats)
+                with self.assertRaisesRegex(ValueError, 'one or three'):
+                    plan(repeats)
+
     def run_mock(self, folder, arm='model_first', damage=None, count=mock_count):
         world, answers = reference()
         order = [c['id'] for c in m.schedule(world, arm, answers)]
@@ -402,18 +491,46 @@ class RunnerTests(unittest.TestCase):
         turn['provider_response_raw_sha256'] = m.digest(turn['provider_response_raw'])
         self.assertFalse(runner.audit_artifact(a)['responses'])
 
-    def test_identity_context_and_readout_leak_tamper(self):
+    def test_identity_context_and_retained_report_tamper(self):
         with tempfile.TemporaryDirectory() as t:
             original, _ = self.run_mock(t)
-        for key in ('B_model', 'B_readout'):
-            a = json.loads(json.dumps(original))
-            t = a['turns'][key]
-            t['request_body']['messages'].insert(1, {'role': 'assistant', 'content': a['turns']['A_readout']['raw_response']})
-            t['request_sha256'] = runner.canonical(t['request_body'])
-            self.assertFalse(runner.audit_artifact(a)['history'])
+        for key in ('B_model', 'B_task', 'B_readout'):
+            # Even internally rehashed histories must retain both A report messages.
+            for role in ('user', 'assistant'):
+                a = json.loads(json.dumps(original))
+                t = a['turns'][key]
+                content = a['turns']['A_readout']['prompt' if role == 'user' else 'raw_response']
+                t['request_body']['messages'].remove({'role': role, 'content': content})
+                t['parent_history'] = copy.deepcopy(t['request_body']['messages'][:-1])
+                t['parent_history_sha256'] = runner.canonical(t['parent_history'])
+                t['parent_history_id'] = 'history_' + t['parent_history_sha256']
+                t['messages_sha256'] = runner.canonical(t['request_body']['messages'])
+                t['request_sha256'] = runner.canonical(t['request_body'])
+                self.assertFalse(runner.audit_artifact(a)['history'])
         a = json.loads(json.dumps(original))
         a['turns']['A_model']['context_check']['identity']['build_info'] = 'changed'
         self.assertFalse(runner.audit_artifact(a)['responses'])
+
+    def test_malformed_reports_retained_and_private_reasoning_excluded(self):
+        malformed = ' \nA transition report: }{ invalid\t '
+        def damage(name, env):
+            if name == 'A_readout':
+                env['choices'][0]['message']['content'] = malformed
+        for arm in m.ARMS:
+            with tempfile.TemporaryDirectory() as t:
+                a, bodies = self.run_mock(t, arm=arm, damage=damage)
+                self.assertTrue(all(runner.audit_artifact(a).values()))
+                self.assertFalse(a['scores']['periods']['A']['readout_parsed']['well_formed'])
+                for name, body in zip(a['run_order'], bodies):
+                    if name.startswith('B'):
+                        self.assertIn({'role': 'assistant', 'content': malformed}, body['messages'])
+                    self.assertTrue(all(set(x) == {'role', 'content'} for x in body['messages']))
+                # Provider-private text is never used by schedule or runner history.
+                private = copy.deepcopy(a)
+                for turn in private['turns'].values():
+                    turn['provider_reasoning'] = 'PRIVATE REASONING SENTINEL'
+                calls = m.schedule(a['world'], arm, {k: v['raw_response'] for k,v in private['turns'].items()})
+                self.assertNotIn('PRIVATE REASONING SENTINEL', json.dumps(calls))
 
     def test_capacity_boundaries_and_old_default(self):
         c = local_config()
@@ -441,6 +558,9 @@ class RunnerTests(unittest.TestCase):
             a = json.loads(next(Path(t).glob('*.json')).read_text())
             self.assertEqual(a['state'], 'incomplete')
             self.assertIn('raw_response', a['turns']['A_task'])
+            self.assertIn('raw_response', a['turns']['A_readout'])
+            messages = a['turns']['B_model']['request_body']['messages']
+            self.assertIn({'role': 'assistant', 'content': a['turns']['A_readout']['raw_response']}, messages)
             self.assertNotIn('provider_response_raw', a['turns']['B_model'])
             self.assertNotIn('scores', a)
 
@@ -481,6 +601,10 @@ class RunnerTests(unittest.TestCase):
                          {'max_completion_tokens': 4096, 'reasoning_effort': 'none'})
         c = wrapper(False, 'sol')
         runner.validate_config(c, 'sol')
+        old_history = copy.deepcopy(c)
+        del old_history['model_first']['history_policy']
+        with self.assertRaisesRegex(ValueError, 'history policy'):
+            runner.validate_config(old_history, 'sol')
         no_price = copy.deepcopy(c)
         no_price['deployment']['pricing']['input_per_million'] = None
         with self.assertRaisesRegex(ValueError, 'rates'):
@@ -500,6 +624,11 @@ class RunnerTests(unittest.TestCase):
                     runner.run_once(m.load(8), arm, repeat, args(arm), None, p)
                 s = runner.write_summary(p)
                 self.assertTrue(s['operational_gate_pass'])
+                self.assertNotIn('measurement', s['usage_by_workflow'])
+                usage = s['usage_by_workflow']
+                self.assertEqual(usage['main']['completion_tokens']['n_responses'],
+                                 usage['model_and_task']['completion_tokens']['n_responses'] +
+                                 usage['transition_report']['completion_tokens']['n_responses'])
                 paths.append(p)
             report = summarize(paths)
             self.assertEqual(len(report['runs']), 9)
@@ -538,6 +667,26 @@ class ReportingAndCredentialReview(unittest.TestCase):
             self.assertEqual(group['periods']['A']['transition_exact']['denominator'], 0)
             self.assertIsNone(group['periods']['A']['transition_exact']['value'])
             self.assertEqual(group['quarantined_run_ids'], [a['run_id']])
+
+    def test_branched_identity_cannot_pool_with_retained_reports(self):
+        with tempfile.TemporaryDirectory() as t:
+            a, path = self.records(t)
+            for policy in (None, 'branched_reports_v1'):
+                old = copy.deepcopy(a)
+                if policy is None:
+                    del old['identity']['history_policy']
+                else:
+                    old['identity']['history_policy'] = policy
+                old['identity_sha256'] = runner.canonical(old['identity'])
+                old['run_id'] = old['run_id'].rsplit('_', 1)[0] + '_' + old['identity_sha256'][:16]
+                self.assertNotEqual(old['run_id'], a['run_id'])
+                self.assertFalse(runner.audit_artifact(old)['identity'])
+                old_path = Path(t) / 'old_setup.json'
+                old_path.write_text(json.dumps(old))
+                report = summarize([path, old_path])
+                self.assertEqual(len(report['groups']), 2)
+                self.assertEqual(sum(g['completed'] for g in report['groups'].values()), 1)
+                self.assertEqual(report['runs'][1]['disposition'], 'quarantined_failed_operational_audit')
 
     def test_valid_malformed_and_wrong_answers_remain_denominators(self):
         world, answers = reference()
@@ -588,7 +737,7 @@ class ReportingAndCredentialReview(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             a, _ = self.records(t)
         original = compatible_identity(a)
-        for field in ('protocol', 'scorer', 'model', 'profile', 'provider', 'reasoning_mode',
+        for field in ('protocol', 'history_policy', 'scorer', 'model', 'profile', 'provider', 'reasoning_mode',
                       'implementation_commit', 'implementation_dirty', 'lock_sha256',
                       'prompt_hashes', 'world_sha256', 'queries', 'deployment_sha256', 'sampling_seed_status'):
             b = copy.deepcopy(a)
