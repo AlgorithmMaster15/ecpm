@@ -37,6 +37,9 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Provenance checks read the pinned historical source commit.
+          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -62,6 +65,9 @@ jobs:
         run: |
           python test_explore_agent.py
           python test_run_pilot.py
+          python test_icl_graph.py
+          python test_icl_model_first_contract.py
+          python test_icl_model_first.py
 
       # Dry-run providers make no API calls, so the pilots are runnable in CI.
       # This catches breakage in the harness that the suites do not reach.

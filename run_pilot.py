@@ -107,7 +107,7 @@ ALL_PROBES = ("detection", "localization", "preservation", "adaptation")
 # turn 2 reveals period B (turn 1 stays in context) and asks ALL_PROBES.
 TURN1_PROBES = ("route_pre", "belief_pre")
 REELICIT_PROBE = "belief_post"
-PROTOCOLS = ("legacy", "icl_two_response_v1")
+PROTOCOLS = ("legacy", "icl_two_response_v1", "icl_graph_availability_v1", "icl_model_first_v1")
 ICL_LEVELS = ("empirical_table", "explained_logs", "minimal_logs")
 COST_STATUSES = ("exact", "estimated", "unavailable", "local_unpriced")
 
@@ -144,6 +144,14 @@ SCENARIOS = {
     "seed7_silent_break": {},
     "icl_det_gate_seed8": {
         "condition": "silent_break", "seed": 8, "k": 10, "budget": 10,
+        "variants": ("det",),
+    },
+    "icl_det_gate_seed13": {
+        "condition": "silent_break", "seed": 13, "k": 10, "budget": 10,
+        "variants": ("det",),
+    },
+    "icl_det_gate_seed25": {
+        "condition": "silent_break", "seed": 25, "k": 10, "budget": 10,
         "variants": ("det",),
     },
     "seed7_hard_removal": {"condition": "hard_removal"},
@@ -1243,7 +1251,7 @@ def _icl_run_identity(sc, deterministic, args, level, repeat,
 def _icl_run_id(identity):
     suffix = _canonical_sha256(identity)[:16]
     mode = "det" if identity["deterministic"] else "sto"
-    return (f"icl_two_response_v1_seed{identity['scenario']['seed']}_{mode}_"
+    return (f"{identity['protocol']}_seed{identity['scenario']['seed']}_{mode}_"
             f"r{identity['repeat']}_{identity['level']}_"
             f"s{identity['sampling']['sampling_seed']}_{suffix}")
 
@@ -1288,8 +1296,6 @@ def _save_raw_turn(artifact, path, name, response,
         "previous_response_sha256": previous_response_sha256,
         "provider_usage": response["usage"],
         "provider_finish_reason": response["finish_reason"],
-        "reasoning_model_request_shape":
-            response["reasoning_model_request_shape"],
         "truncated": response["truncated"],
         "network_retries": response["network_retries"],
         "provider_reasoning": response["reasoning"],
@@ -1298,6 +1304,8 @@ def _save_raw_turn(artifact, path, name, response,
             response["reasoning_control_violation"],
         "system_fingerprint": response["system_fingerprint"],
     })
+    if "reasoning_model_request_shape" in response:
+        turn["reasoning_model_request_shape"] = response["reasoning_model_request_shape"]
     artifact["state"] = f"turn_{name.lower()}_raw_saved"
     artifact["persistence_events"].append({
         "event": artifact["state"], "created_utc": _utc_now()})
@@ -1354,7 +1362,8 @@ def _final_icl_metrics(turn_a, turn_b):
     }
 
 
-def write_icl_summary(outdir, results, levels=ICL_LEVELS):
+def write_icl_summary(outdir, results, protocol="icl_two_response_v1",
+                      levels=ICL_LEVELS, audit=None):
     """Write the accuracy-independent operational gate summary."""
     rows = []
     for result in results:
@@ -1391,6 +1400,10 @@ def write_icl_summary(outdir, results, levels=ICL_LEVELS):
             "reasoning_control_violation": control_violation,
             "operational_pass": operational_pass,
         })
+        if audit is not None:
+            checks = audit(artifact)
+            rows[-1]["checks"] = checks
+            rows[-1]["operational_pass"] = operational_pass and all(checks.values())
     expected = len(levels) * 3
     expected_level_repeats = {
         (repeat, level) for repeat in (1, 2, 3) for level in levels}
@@ -1400,7 +1413,7 @@ def write_icl_summary(outdir, results, levels=ICL_LEVELS):
                        and set(observed_level_repeats) == expected_level_repeats)
     completed = sum(row["completed"] for row in rows)
     summary = {
-        "protocol": "icl_two_response_v1", "expected_runs": expected,
+        "protocol": protocol, "expected_runs": expected,
         "completed_runs": completed,
         "every_level_repeat_present": complete_matrix,
         "every_run_has_exactly_two_responses": (
@@ -1428,11 +1441,14 @@ def write_icl_summary(outdir, results, levels=ICL_LEVELS):
 
 
 def run_icl_two_response_once(record, view, sc, deterministic, args, level,
-                              repeat, sampling_seed, outdir, levels=ICL_LEVELS):
+                              repeat, sampling_seed, outdir, extension=None,
+                              levels=ICL_LEVELS):
     """Run or safely resume one level/repeat; exactly two response calls."""
     queried = queried_pairs_for_icl(record, sc)
     target = protocol_target_pair(record, sc)
-    if level in ICL_GRAPH_LEVELS:
+    if extension is not None:
+        prompt_a, prompt_b = extension.prompts
+    elif level in ICL_GRAPH_LEVELS:
         prompt_a = build_icl_graph_prompt(record, view, level, "pre", queried)
         prompt_b = build_icl_graph_prompt(record, view, level, "post", queried)
     else:
@@ -1443,15 +1459,21 @@ def run_icl_two_response_once(record, view, sc, deterministic, args, level,
     visible_post = visible_transition_stats(
         raw_visible_rows(view, "post"), view["legal_actions_post"],
         view["legal_actions_pre"])
-    sampling = sampling_seed_provenance(args, sampling_seed)
-    reasoning = reasoning_provenance(args)
+    sampling = (sampling_seed_provenance(args, sampling_seed)
+                if extension is None else extension.sampling)
+    reasoning = (reasoning_provenance(args)
+                 if extension is None else extension.reasoning)
     identity = _icl_run_identity(sc, deterministic, args, level, repeat,
                                  sampling, reasoning, prompt_a, prompt_b,
                                  queried)
+    if extension is not None:
+        identity.update(extension.identity_fields)
     identity_sha = _canonical_sha256(identity)
     run_id = _icl_run_id(identity)
     path = os.path.join(outdir, run_id + ".json")
     if os.path.exists(path):
+        if extension is not None:
+            raise RuntimeError("graph-availability runs never resume automatically")
         artifact = _load_icl_artifact(
             path, run_id, identity_sha, prompt_a, prompt_b)
         if artifact["state"] == "completed":
@@ -1462,13 +1484,15 @@ def run_icl_two_response_once(record, view, sc, deterministic, args, level,
             "identity_sha256": identity_sha,
             "state": "initialized",
             "created_utc": _utc_now(),
-            "protocol": "icl_two_response_v1",
+            "protocol": identity["protocol"],
             "level_set": getattr(args, "level_set", "v1"),
             "level": level,
             "repeat": repeat,
             "repeated_output": True,
-            "level_order": list(icl_level_order(repeat, levels)),
-            "level_order_position": list(icl_level_order(repeat, levels)).index(level) + 1,
+            "level_order": (list(icl_level_order(repeat, levels)) if extension is None
+                            else [level]),
+            "level_order_position": (list(icl_level_order(repeat, levels)).index(level) + 1
+                                     if extension is None else 1),
             "tag": args.tag,
             "env": {"schema_version": SCHEMA_VERSION,
                     "frozen_sha": FROZEN_SHA, "git_commit": git_head(),
@@ -1509,13 +1533,20 @@ def run_icl_two_response_once(record, view, sc, deterministic, args, level,
             "persistence_events": [
                 {"event": "initialized", "created_utc": _utc_now()}],
         }
+        if extension is not None:
+            artifact.update(extension.artifact_fields)
+            artifact["identity"] = identity
         _write_json_atomic(path, artifact)
 
     if artifact["state"] == "initialized":
         dry = _dry_run_icl_answer(record, queried, "pre")
-        response = dispatch_icl(args, [{"role": "user", "content": prompt_a}],
-                                sampling, reasoning, dry_text=dry)
+        messages = [{"role": "user", "content": prompt_a}]
+        response = (dispatch_icl(args, messages, sampling, reasoning, dry_text=dry)
+                    if extension is None else
+                    extension.call(messages, "A", artifact, path))
         _save_raw_turn(artifact, path, "A", response)
+        if extension is not None:
+            extension.check_saved_turn(artifact, path, "A")
 
     if artifact["state"] == "turn_a_raw_saved":
         parsed = parse_icl_turn_a(artifact["turns"]["A"]["raw_response"])
@@ -1533,10 +1564,13 @@ def run_icl_two_response_once(record, view, sc, deterministic, args, level,
                     {"role": "assistant", "content": raw_a},
                     {"role": "user", "content": prompt_b}]
         dry = _dry_run_icl_answer(record, queried, "post")
-        response = dispatch_icl(args, messages, sampling, reasoning,
-                                dry_text=dry)
+        response = (dispatch_icl(args, messages, sampling, reasoning, dry_text=dry)
+                    if extension is None else
+                    extension.call(messages, "B", artifact, path))
         _save_raw_turn(artifact, path, "B", response,
                        artifact["turns"]["A"]["response_sha256"])
+        if extension is not None:
+            extension.check_saved_turn(artifact, path, "B")
 
     if artifact["state"] == "turn_b_raw_saved":
         parsed = parse_icl_turn_b(artifact["turns"]["B"]["raw_response"])
@@ -1589,13 +1623,13 @@ def run_icl_two_response_suite(sc, deterministic, args, outdir):
         for level in icl_level_order(repeat, levels):
             artifact, path, skipped = run_icl_two_response_once(
                 record, view, sc, deterministic, args, level, repeat,
-                sampling_seed, outdir, levels)
+                sampling_seed, outdir, levels=levels)
             outcome = "already completed; unchanged" if skipped else \
                 artifact["state"]
             print(f"{artifact['run_id']}: {outcome} -> {path}")
             results.append({"run_id": artifact["run_id"], "path": path,
                             "skipped": skipped})
-    summary, path = write_icl_summary(outdir, results, levels)
+    summary, path = write_icl_summary(outdir, results, levels=levels)
     print(f"operational gate: "
           f"{'PASS' if summary['operational_gate_pass'] else 'FAIL'} -> {path}")
     return results
@@ -1856,6 +1890,16 @@ def main():
                     help="legacy keeps existing behavior; "
                          "icl_two_response_v1 runs the additive 3-level "
                          "two-response protocol")
+    ap.add_argument("--graph-condition", choices=["graph_ab", "graph_a", "logs_only"])
+    ap.add_argument("--model-first-condition", choices=["model_first", "task_only", "graph_given"],
+                    help="icl_model_first_v1 only: one locked workflow per block")
+    ap.add_argument("--history-policy", choices=["retained_reports_v2", "separate_reports_post_task_v1"],
+                    default="retained_reports_v2", help="icl_model_first_v1 only: retain reports or collect post-task copies")
+    ap.add_argument("--request-profile", choices=["gemma_e4b", "gemma_31b", "sol", "gemma_31b_together"])
+    ap.add_argument("--deployment-config",
+                    help="graph protocol only: reviewed non-secret endpoint/readiness JSON")
+    ap.add_argument("--off-reference",
+                    help="graph protocol only: completed matched OFF directory for conditional ON")
     # what is asked
     ap.add_argument("--scenario", default="seed7_silent_break")
     ap.add_argument("--list-scenarios", action="store_true")
@@ -1972,6 +2016,14 @@ def main():
     if args.tag is None:
         args.tag = sc["name"]
     outdir = os.path.join(args.out, args.tag)
+    if args.protocol == "icl_model_first_v1":
+        import icl_model_first_runner
+        icl_model_first_runner.run_suite(sc, args, outdir)
+        return
+    if args.protocol == "icl_graph_availability_v1":
+        import icl_graph
+        icl_graph.run_suite(sc, args, outdir)
+        return
     os.makedirs(outdir, exist_ok=True)
 
     wanted = {"both": ("det", "sto"), "det": ("det",),

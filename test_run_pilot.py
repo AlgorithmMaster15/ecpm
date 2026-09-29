@@ -782,6 +782,30 @@ def test_summary_generation_and_safe_replay():
     print("PASS deterministic operational summary and safe replay")
 
 
+def test_main_graph_level_set_keeps_rotation_and_protocol():
+    """The older level-set path coexists with the single-condition protocols."""
+    sc = scenario()
+    runner_args = args()
+    runner_args.level_set = "graph"
+    with tempfile.TemporaryDirectory() as outdir:
+        results = run_pilot.run_icl_two_response_suite(sc, True, runner_args, outdir)
+        with open(os.path.join(outdir, "summary.json")) as fh:
+            summary = json.load(fh)
+        assert summary["protocol"] == "icl_two_response_v1"
+        assert summary["operational_gate_pass"]
+        assert summary["completed_runs"] == 9
+        for result in results:
+            with open(result["path"]) as fh:
+                artifact = json.load(fh)
+            order = list(run_pilot.icl_level_order(artifact["repeat"], run_pilot.ICL_GRAPH_LEVELS))
+            assert artifact["level_set"] == "graph"
+            assert artifact["level_order"] == order
+            assert artifact["level_order_position"] == order.index(artifact["level"]) + 1
+            assert ("Complete graph, Period A:" in artifact["turns"]["A"]["prompt"]) == \
+                (artifact["level"] != "logs_only")
+    print("PASS main graph-level path preserves protocol, prompts and rotation")
+
+
 if __name__ == "__main__":
     test_legacy_prompt_and_scorer_regression()
     test_levels_share_visible_evidence_and_raw_order()
@@ -799,4 +823,5 @@ if __name__ == "__main__":
     test_cost_and_endpoint_provenance()
     test_two_calls_persistence_hashes_and_safe_resume()
     test_summary_generation_and_safe_replay()
+    test_main_graph_level_set_keeps_rotation_and_protocol()
     print("\nALL RUNNER TESTS PASSED")

@@ -1,5 +1,7 @@
 # docs
 
+- [ICL.md](ICL.md): model-first and graph-availability experiments, commands and readiness requirements.
+
 - `INTERFACE.md` the frozen answer contract and record schema. Section 7 is
   what `ecpm_parser.py` implements.
 - `EXPLORE_AGENT.md` the agentic exploration arm.
