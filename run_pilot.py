@@ -92,9 +92,9 @@ from ecpm_parser import (PARSERS, belief_self_consistency,
                          score_control_preservation, score_icl_beliefs,
                          score_icl_localization, score_adaptation,
                          score_route_pre)
-from model_clients import (TransientLLMError, call_anthropic,
-                           call_anthropic_chat, call_azure, call_azure_chat,
-                           call_openai, call_openai_chat)
+from model_clients import (TransientLLMError, _is_gpt_reasoning,
+                           call_anthropic, call_anthropic_chat, call_azure,
+                           call_azure_chat, call_openai, call_openai_chat)
 from prompts import (ASKS_ACTIVE, ask_block, context_block, context_block_a,
                      reveal_block_b)
 from resource_mdp import (CONDITIONS, PROMPT_RENDERINGS, SCHEMA_VERSION,
@@ -291,6 +291,151 @@ pair, available means that the action appears in the Period B menu; it does
 not mean the action works. If an action is unavailable, use available=false,
 destination=null, and p_success=null. """ + ICL_ROUTE_INSTRUCTION + \
 """ Do not include other text."""
+
+
+# ------------------------------------------------------- graph ICL levels
+#
+# The v1 levels above vary how the evidence is rendered. These three vary
+# how much of the true transition structure is supplied outright, holding
+# the observations, the queried pairs and the answer schema fixed:
+#
+#   graph_ab    complete graph in both periods
+#   graph_a     complete graph in Period A only
+#   logs_only   no graph in either period
+#
+# Only the graph block differs, so a score gap between levels is a gap in
+# what the supplied structure bought, not in wording. graph_ab and graph_a
+# hand the model evaluator-side truth on purpose; that is the treatment,
+# and it is why these builders take `record` while the v1 builder does not.
+
+ICL_GRAPH_LEVELS = ("graph_ab", "graph_a", "logs_only")
+
+ICL_GRAPH_MECHANICS = """Each action has one destination. A successful attempt moves to that
+destination. A failed attempt leaves the system at the current node.
+The action can then be tried again. Each attempt costs 1.
+Each log row is [current_node, action, observed_next_node].
+
+available means the action is in the current action menu. It does not mean
+the action succeeds. destination means the node reached on success, not
+the node where a failed attempt leaves you.
+
+If a graph is supplied for the current period, use its destination and
+success probability. Otherwise, use the logs: an attempt succeeds exactly
+when observed_next_node differs from current_node. Calculate p_success
+using only this period's successes divided by this period's observations
+for that action. If there are observations but no successes, p_success is 0.
+Use the destination shown by a successful observation. If there is none
+in this period, use the most recent earlier destination supported by the
+supplied graph or logs; if none is known, use null. Carry forward only the
+destination, not the earlier probability. If an action is unavailable,
+use available=false, destination=null and p_success=null.
+
+Choose a route from Start to Goal that minimizes the expected number of
+attempts in the current period. A route lists actions to take, retrying
+an action after a failure. The first action must be at Start; the successful
+destination of the final action must be Goal. Do not add an action at Goal
+after arrival."""
+
+ICL_GRAPH_COMPARE = """Compare Period B with Period A, using the supplied evidence, not whether
+you changed your wording. Report whether any action changed, which action
+changed, and whether each queried action changed. A change means a change
+in availability, destination or success probability. If nothing changed,
+set changed=false and changed_pair=null. Otherwise set changed=true and
+name the changed pair. Report current Period B beliefs and its best route."""
+
+ICL_GRAPH_PLACEHOLDERS = (
+    "Replace all angle-bracket placeholders with values. DESTINATION is a "
+    "node string or null; PROBABILITY is a number or null; BOOLEAN is true "
+    "or false. The route array must contain all required action steps.")
+
+ICL_GRAPH_CLOSING = ("Return exactly one JSON object, with no text or code "
+                     "fences before or after it.")
+
+
+def _graph_supplied(level, period):
+    """Is the true graph shown for this level and period?"""
+    if level not in ICL_GRAPH_LEVELS:
+        raise ValueError(f"unknown graph ICL level: {level!r}")
+    if level == "logs_only":
+        return False
+    return level == "graph_ab" or period == "pre"
+
+
+def _format_menu_all_nodes(nodes, menu):
+    """Menu line listing every node, including nodes with no actions."""
+    return "; ".join(f"{node}: {', '.join(menu.get(node, []))}"
+                     for node in nodes)
+
+
+def _format_graph_table(record, period, menu):
+    """The complete-graph block: one row per menu pair, truth values."""
+    period_name = "A" if period == "pre" else "B"
+    edges = {(edge["from"], edge["action"]): (edge["to"], edge["p"])
+             for edge in record[f"world_{period}"]["edges"]}
+    lines = [f"Complete graph, Period {period_name}:",
+             "node | action | available | destination | p_success"]
+    empty = []
+    for node in record["nodes"]:
+        actions = sorted(menu.get(node, []))
+        if not actions:
+            empty.append(f"{node} has no available actions.")
+            continue
+        for action in actions:
+            destination, p = edges.get((node, action), (None, None))
+            lines.append(
+                f"{node} | {action} | true | "
+                f"{destination if destination is not None else 'null'} | "
+                f"{p if p is not None else 'null'}")
+    return "\n".join(lines + empty)
+
+
+def _icl_graph_schema(queried, period):
+    """The answer template, with the queried pairs written out in order."""
+    if period == "pre":
+        rows = [f'    {{"node":"{q["node"]}","action":"{q["action"]}",'
+                f'"available":<BOOLEAN>,"destination":<DESTINATION>,'
+                f'"p_success":<PROBABILITY>}}' for q in queried]
+        head = "{\n"
+    else:
+        rows = [f'    {{"node":"{q["node"]}","action":"{q["action"]}",'
+                f'"available":<BOOLEAN>,"changed":<BOOLEAN>,'
+                f'"destination":<DESTINATION>,"p_success":<PROBABILITY>}}'
+                for q in queried]
+        head = ('{\n  "changed":<BOOLEAN>,\n'
+                '  "changed_pair":<null or {"node":"...","action":"..."}>,\n')
+    body = ",\n".join(rows)
+    return (f"Return this structure with all placeholders replaced:\n"
+            f'{head}  "pairs": [\n{body}\n  ],\n'
+            f'  "route": [<ALL ROUTE STEPS AS '
+            f'{{"node":"...","action":"..."}}>]\n}}')
+
+
+def build_icl_graph_prompt(record, view, level, period, queried):
+    """Build one graph-level prompt. Supplies truth when the level says to."""
+    if period not in ("pre", "post"):
+        raise ValueError("unknown period")
+    menu = view[f"legal_actions_{period}"]
+    period_name = "A" if period == "pre" else "B"
+    opening = ("Period A." if period == "pre" else
+               "Period B may or may not differ from Period A.")
+    blocks = [f"{opening}\n{ICL_GRAPH_MECHANICS}\n",
+              f"Nodes: {', '.join(view['nodes'])}\n"
+              f"Start: {view['start']}   Goal: {view['goal']}\n"
+              f"Action menu, Period {period_name}: "
+              f"{_format_menu_all_nodes(view['nodes'], menu)}\n"]
+    if _graph_supplied(level, period):
+        blocks.append(_format_graph_table(record, period, menu) + "\n")
+    rows = "\n".join(raw_visible_rows(view, period))
+    blocks.append(f"Raw shuffled observations, Period {period_name}:\n"
+                  f"{rows}\n")
+    blocks.append("Pairs to report in this order:\n"
+                  f"{_format_queried_pairs(queried)}\n")
+    if period == "post":
+        blocks.append(ICL_GRAPH_COMPARE + "\n")
+    blocks.append(ICL_GRAPH_PLACEHOLDERS + "\n")
+    blocks.append(_icl_graph_schema(queried, period) + "\n"
+                  + ICL_GRAPH_CLOSING + "\n")
+    return "\n".join(blocks)
 
 
 def parse_visible_rows(text):
@@ -859,19 +1004,41 @@ def _reasoning_evidence(provider, response, reasoning):
     return "unknown"
 
 
+def _icl_reasoning_model(args):
+    """True when the deployment needs the reasoning-model request shape.
+
+    Azure hides the underlying model behind a deployment name, so the
+    operator states it with --azure-reasoning-model. Direct OpenAI names
+    are recognised from the model string.
+    """
+    if args.provider == "azure":
+        return bool(getattr(args, "azure_reasoning_model", False))
+    if args.provider == "openai":
+        return _is_gpt_reasoning(getattr(args, "model", "") or "")
+    return False
+
+
 def _call_icl_provider_once(args, messages, sampling, reasoning):
     """One unconstrained text response with explicit sampling controls."""
     if args.provider == "dry-run":
         raise AssertionError("dry-run response is generated by the caller")
-    body = {"messages": messages, "max_tokens": args.max_tokens,
-            "temperature": args.temperature}
+    reasoning_model = _icl_reasoning_model(args)
+    if reasoning_model:
+        # GPT-5/GPT-6 deployments reject max_tokens and any temperature
+        # other than the default, and reject top_p/top_k outright.
+        body = {"messages": messages,
+                "max_completion_tokens": args.max_tokens}
+    else:
+        body = {"messages": messages, "max_tokens": args.max_tokens,
+                "temperature": args.temperature}
     if args.provider != "azure":
         body["model"] = args.model
     if sampling["sampling_seed_status"] == "supported":
         body["seed"] = sampling["sampling_seed"]
-    for field in ("top_p", "top_k"):
-        if sampling[field] is not None:
-            body[field] = sampling[field]
+    if not reasoning_model:
+        for field in ("top_p", "top_k"):
+            if sampling[field] is not None:
+                body[field] = sampling[field]
     body.update(reasoning["request_fields"])
     if args.provider in ("openai", "azure"):
         if args.provider == "azure":
@@ -917,6 +1084,7 @@ def _call_icl_provider_once(args, messages, sampling, reasoning):
             f"{args.provider!r}")
     evidence = _reasoning_evidence(args.provider, data, reasoning_text)
     return {"text": text, "usage": data.get("usage", {}),
+            "reasoning_model_request_shape": reasoning_model,
             "finish_reason": finish,
             "truncated": finish in ("length", "max_tokens"),
             "reasoning": reasoning_text,
@@ -930,7 +1098,9 @@ def dispatch_icl(args, messages, sampling, reasoning, dry_text=None,
                  max_attempts=6):
     """Retry transport failures only; never retry a returned model answer."""
     if args.provider == "dry-run":
-        return {"text": dry_text, "usage": {}, "finish_reason": "dry_run",
+        return {"text": dry_text, "usage": {},
+                "reasoning_model_request_shape": False,
+                "finish_reason": "dry_run",
                 "truncated": False, "reasoning": None,
                 "reasoning_evidence": "unknown",
                 "reasoning_control_violation": False,
@@ -1028,12 +1198,22 @@ def score_icl_turn(record, parsed, queried, period, target, visible_stats,
     return result
 
 
-def icl_level_order(repeat):
+def icl_level_order(repeat, levels=ICL_LEVELS):
     """Rotate the three levels across repeated outputs."""
     if repeat not in (1, 2, 3):
         raise ValueError("repeat must be 1, 2, or 3")
+    if len(levels) != 3:
+        raise ValueError("a level set must contain exactly three levels")
     shift = repeat - 1
-    return ICL_LEVELS[shift:] + ICL_LEVELS[:shift]
+    return tuple(levels)[shift:] + tuple(levels)[:shift]
+
+
+def icl_levels_for(level_set):
+    if level_set == "v1":
+        return ICL_LEVELS
+    if level_set == "graph":
+        return ICL_GRAPH_LEVELS
+    raise ValueError(f"unknown level set: {level_set!r}")
 
 
 def _git_dirty():
@@ -1050,6 +1230,7 @@ def _icl_run_identity(sc, deterministic, args, level, repeat,
                      ("name", "condition", "seed", "matched", "k",
                       "evidence_seed", "budget")},
         "deterministic": deterministic,
+        "level_set": getattr(args, "level_set", "v1"),
         "level": level,
         "repeat": repeat,
         "sampling": sampling,
@@ -1058,6 +1239,7 @@ def _icl_run_identity(sc, deterministic, args, level, repeat,
         "endpoint": endpoint_provenance(args),
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
+        "reasoning_model_request_shape": _icl_reasoning_model(args),
         "reasoning": reasoning,
         "git_commit": git_head(),
         "queried_pairs": queried,
@@ -1122,6 +1304,8 @@ def _save_raw_turn(artifact, path, name, response,
             response["reasoning_control_violation"],
         "system_fingerprint": response["system_fingerprint"],
     })
+    if "reasoning_model_request_shape" in response:
+        turn["reasoning_model_request_shape"] = response["reasoning_model_request_shape"]
     artifact["state"] = f"turn_{name.lower()}_raw_saved"
     artifact["persistence_events"].append({
         "event": artifact["state"], "created_utc": _utc_now()})
@@ -1257,15 +1441,19 @@ def write_icl_summary(outdir, results, protocol="icl_two_response_v1",
 
 
 def run_icl_two_response_once(record, view, sc, deterministic, args, level,
-                              repeat, sampling_seed, outdir, extension=None):
+                              repeat, sampling_seed, outdir, extension=None,
+                              levels=ICL_LEVELS):
     """Run or safely resume one level/repeat; exactly two response calls."""
     queried = queried_pairs_for_icl(record, sc)
     target = protocol_target_pair(record, sc)
-    if extension is None:
+    if extension is not None:
+        prompt_a, prompt_b = extension.prompts
+    elif level in ICL_GRAPH_LEVELS:
+        prompt_a = build_icl_graph_prompt(record, view, level, "pre", queried)
+        prompt_b = build_icl_graph_prompt(record, view, level, "post", queried)
+    else:
         prompt_a = build_icl_prompt(view, level, "pre", queried)
         prompt_b = build_icl_prompt(view, level, "post", queried)
-    else:
-        prompt_a, prompt_b = extension.prompts
     visible_pre = visible_transition_stats(
         raw_visible_rows(view, "pre"), view["legal_actions_pre"])
     visible_post = visible_transition_stats(
@@ -1297,12 +1485,13 @@ def run_icl_two_response_once(record, view, sc, deterministic, args, level,
             "state": "initialized",
             "created_utc": _utc_now(),
             "protocol": identity["protocol"],
+            "level_set": getattr(args, "level_set", "v1"),
             "level": level,
             "repeat": repeat,
             "repeated_output": True,
-            "level_order": (list(icl_level_order(repeat)) if extension is None
+            "level_order": (list(icl_level_order(repeat, levels)) if extension is None
                             else [level]),
-            "level_order_position": (list(icl_level_order(repeat)).index(level) + 1
+            "level_order_position": (list(icl_level_order(repeat, levels)).index(level) + 1
                                      if extension is None else 1),
             "tag": args.tag,
             "env": {"schema_version": SCHEMA_VERSION,
@@ -1424,22 +1613,23 @@ def run_icl_two_response_suite(sc, deterministic, args, outdir):
         if not gate["eligible"]:
             raise ValueError(f"seed {sc['seed']} fails deterministic gate: "
                              f"{', '.join(gate['reasons'])}")
+    levels = icl_levels_for(getattr(args, "level_set", "v1"))
     record = build_record(sc, deterministic)
     view = prompt_view(record, rendering="F2_shuffled",
                        periods=("pre", "post"),
                        budget_per_pair=sc["budget"], budget_seed=0)
     results = []
     for repeat, sampling_seed in enumerate(args.sampling_seeds, start=1):
-        for level in icl_level_order(repeat):
+        for level in icl_level_order(repeat, levels):
             artifact, path, skipped = run_icl_two_response_once(
                 record, view, sc, deterministic, args, level, repeat,
-                sampling_seed, outdir)
+                sampling_seed, outdir, levels=levels)
             outcome = "already completed; unchanged" if skipped else \
                 artifact["state"]
             print(f"{artifact['run_id']}: {outcome} -> {path}")
             results.append({"run_id": artifact["run_id"], "path": path,
                             "skipped": skipped})
-    summary, path = write_icl_summary(outdir, results)
+    summary, path = write_icl_summary(outdir, results, levels=levels)
     print(f"operational gate: "
           f"{'PASS' if summary['operational_gate_pass'] else 'FAIL'} -> {path}")
     return results
@@ -1766,6 +1956,10 @@ def main():
                     default="auto",
                     help="seed capability for the selected endpoint; auto "
                          "uses safe provider defaults")
+    ap.add_argument("--level-set", default="v1", choices=["v1", "graph"],
+                    help="icl_two_response_v1 only; v1 varies evidence "
+                         "rendering, graph varies how much of the true "
+                         "graph is supplied")
     ap.add_argument("--repeats", type=int, default=3,
                     help="icl_two_response_v1 uses exactly three")
     ap.add_argument("--reasoning-mode", choices=["unspecified", "off", "on"],

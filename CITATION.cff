@@ -38,8 +38,8 @@ authors:
   # Listed in advance rather than added after the fact.
   - given-names: Maciej
     family-names: Zwierzynski
-    # affiliation: YOUR INSTITUTION
-    # email: YOUR EMAIL
+    affiliation: Polish-Japanese Academy of Information Technology
+    email: maciej.zwierzynski@pjwstk.edu.pl
     # orcid: https://orcid.org/0000-0000-0000-0000
 repository-code: https://github.com/itu-itis25-bektes23/ecpm
 license: MIT
