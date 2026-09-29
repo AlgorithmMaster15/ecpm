@@ -1,4 +1,4 @@
-"""OFF-only model-first orchestration with retained reports. No retries or repair."""
+"""OFF-only model-first orchestration with explicit report policies. No retries or repair."""
 
 import copy
 import json
@@ -24,35 +24,42 @@ def settings(profile, seed, supported, allowance):
     return result
 
 
-def requests(world, arm):
+def requests(world, arm, history_policy=design.HISTORY_POLICY):
     """A coroutine: each send receives only the exact visible final answer."""
+    design.check_history_policy(history_policy)
     history = [{'role': 'system', 'content': design.SYSTEM}]
     for period in ('A', 'B'):
         texts = design.prompts(world, period, arm)
         if arm == 'model_first':
             msg = {'role': 'user', 'content': texts['model']}
             answer = yield {'id': period + '_model', 'max_output_tokens': 4096,
+                            'history_policy': history_policy, 'conversation': 'main',
                             'messages': copy.deepcopy(history + [msg])}
             history += [msg, {'role': 'assistant', 'content': answer}]
         msg = {'role': 'user', 'content': texts['task']}
         answer = yield {'id': period + '_task',
+                        'history_policy': history_policy, 'conversation': 'main',
                         'max_output_tokens': 4096 if arm == 'model_first' else 8192,
                         'messages': copy.deepcopy(history + [msg])}
         history += [msg, {'role': 'assistant', 'content': answer}]
         msg = {'role': 'user', 'content': texts['readout']}
         answer = yield {'id': period + '_readout', 'max_output_tokens': 4096,
+                        'history_policy': history_policy,
+                        'conversation': design.conversation_kind('readout', history_policy),
                         'messages': copy.deepcopy(history + [msg])}
-        history += [msg, {'role': 'assistant', 'content': answer}]
+        if history_policy == design.HISTORY_POLICY:
+            history += [msg, {'role': 'assistant', 'content': answer}]
 
 
-def validate_config(wrapper, profile):
+def validate_config(wrapper, profile, history_policy=design.HISTORY_POLICY):
+    design.check_history_policy(history_policy)
     if set(wrapper) != {'deployment', 'model_first'}:
         raise ValueError('needs deployment plus model_first stage/path evidence')
     config = wrapper['deployment']
     controls.validate_deployment(config, profile, 'off')
     evidence = wrapper['model_first']
     if (evidence.get('protocol') != design.PROTOCOL
-            or evidence.get('history_policy') != design.HISTORY_POLICY
+            or evidence.get('history_policy') != history_policy
             or evidence.get('output_allowances') != [4096, 8192]
             or any(not isinstance(evidence.get(k), str) or not evidence[k].strip()
                    for k in ('stage_limits_source', 'system_message_source', 'context_source'))):
@@ -185,9 +192,10 @@ def call_provider(body, config, timeout):
         return response.status, response.read().decode('utf-8')
 
 
-def identity(world, arm, repeat, profile, model, config_wrapper, provider):
+def identity(world, arm, repeat, profile, model, config_wrapper, provider, history_policy=design.HISTORY_POLICY):
+    design.check_history_policy(history_policy)
     config = config_wrapper['deployment'] if config_wrapper else None
-    return {'protocol': design.PROTOCOL, 'history_policy': design.HISTORY_POLICY, 'scorer': design.SCORER,
+    return {'protocol': design.PROTOCOL, 'history_policy': history_policy, 'scorer': design.SCORER,
             'implementation_commit': pilot.git_head(), 'implementation_dirty': pilot._git_dirty(),
             'graph_seed': world['seed'], 'world_sha256': canonical(world), 'condition': arm,
             'queries': design.queries(world), 'repeat': repeat, 'repeat_seed_label': repeat - 1,
@@ -201,7 +209,8 @@ def identity(world, arm, repeat, profile, model, config_wrapper, provider):
 
 def run_once(world, arm, repeat, args, wrapper, outdir):
     config = wrapper['deployment'] if wrapper else None
-    ident = identity(world, arm, repeat, args.request_profile, args.model, wrapper, args.provider)
+    policy = design.check_history_policy(args.history_policy)
+    ident = identity(world, arm, repeat, args.request_profile, args.model, wrapper, args.provider, policy)
     run_id = f'{design.PROTOCOL}_seed{world["seed"]}_{arm}_r{repeat}_{canonical(ident)[:16]}'
     path = Path(outdir) / (run_id + '.json')
     if path.exists():
@@ -210,7 +219,7 @@ def run_once(world, arm, repeat, args, wrapper, outdir):
                 'synthetic': config is None, 'deployment': wrapper, 'world': world,
                 'state': 'initialized', 'turns': {}, 'persistence_events': [], 'run_order': []}
     persist(path, artifact, 'initialized')
-    plan = requests(world, arm)
+    plan = requests(world, arm, policy)
     call = next(plan)
     dry_answers = synthetic_answers(world) if config is None else None
     started = time.monotonic()
@@ -219,7 +228,8 @@ def run_once(world, arm, repeat, args, wrapper, outdir):
             name, cap = call['id'], call['max_output_tokens']
             body = {'model': args.model, 'messages': call['messages'], **ident['stage_settings'][str(cap)]}
             parent = copy.deepcopy(call['messages'][:-1])
-            turn = {'request_body': body, 'request_sha256': canonical(body),
+            turn = {'history_policy': policy, 'conversation': call['conversation'],
+                    'request_body': body, 'request_sha256': canonical(body),
                     'prompt': call['messages'][-1]['content'],
                     'prompt_sha256': design.digest(call['messages'][-1]['content']),
                     'messages_sha256': canonical(call['messages']), 'parent_history': parent,
@@ -258,7 +268,7 @@ def run_once(world, arm, repeat, args, wrapper, outdir):
             stage = name.split('_', 1)[1]
             turn['parsed'] = (design.parse_task(turn['raw_response'], world, name[0]) if stage == 'task' else
                               design.parse_readout(turn['raw_response'], world[name[0]]) if stage == 'readout' else
-                              {'status': 'free_form', 'manual_review': 'pending'})
+                              {'status': 'free_form', 'description_score': 'not_scored_by_design'})
             persist(path, artifact, name + ':parsed_saved')
             try:
                 call = plan.send(turn['raw_response'])
@@ -290,16 +300,17 @@ def run_once(world, arm, repeat, args, wrapper, outdir):
 
 
 def audit_artifact(a):
-    """Offline audit of raw envelopes, complete retained history and controls."""
+    """Offline audit of raw envelopes, policy-specific history and controls."""
     checks = {'complete': False, 'identity': False, 'history': False,
               'hashes': False, 'persistence': False, 'responses': False, 'no_secrets': False}
     try:
         i, world, turns = a['identity'], a['world'], a['turns']
         wrapper = a['deployment']
-        config = validate_config(wrapper, i['profile']) if wrapper else None
+        policy = design.check_history_policy(i.get('history_policy'))
+        config = validate_config(wrapper, i['profile'], policy) if wrapper else None
         dry = i['provider'] == 'dry-run'
         checks['identity'] = (i['protocol'] == design.PROTOCOL and i['scorer'] == design.SCORER
-            and i.get('history_policy') == design.HISTORY_POLICY
+            and i.get('history_policy') == policy
             and i['reasoning_mode'] == 'off' and i['condition'] in design.ARMS
             and i['repeat'] in (1, 2, 3) and i['repeat_seed_label'] == i['repeat'] - 1
             and i['world_sha256'] == canonical(world) and world == design.load(i['graph_seed'])
@@ -310,7 +321,7 @@ def audit_artifact(a):
             and (dry or (i['implementation_dirty'] is False and i['model'] == config['model'])))
         expected_id = f'{design.PROTOCOL}_seed{world["seed"]}_{i["condition"]}_r{i["repeat"]}_{canonical(i)[:16]}'
         checks['identity'] &= a['run_id'] == expected_id
-        plan = design.schedule(world, i['condition'], {k: t['raw_response'] for k, t in turns.items()})
+        plan = design.schedule(world, i['condition'], {k: t['raw_response'] for k, t in turns.items()}, policy)
         checks['complete'] = (a['state'] == 'completed' and not a.get('failure')
                               and set(turns) == {c['id'] for c in plan} and a['run_order'] == [c['id'] for c in plan])
         checks.update(history=True, hashes=True, persistence=True, responses=True)
@@ -321,7 +332,8 @@ def audit_artifact(a):
             body = {'model': i['model'], 'messages': c['messages'], **request_settings}
             parent = c['messages'][:-1]
             checks['identity'] &= i['stage_settings'][str(cap)] == request_settings
-            checks['history'] &= (t['request_body'] == body and t['parent_history'] == parent
+            checks['history'] &= (t['history_policy'] == policy and t['conversation'] == c['conversation']
+                and t['request_body'] == body and t['parent_history'] == parent
                 and t['parent_history_id'] == 'history_' + canonical(parent)
                 and t['parent_history_sha256'] == canonical(parent) and t['max_output_tokens'] == cap)
             checks['hashes'] &= (t['request_sha256'] == canonical(body)
@@ -345,16 +357,21 @@ def write_summary(outdir, expected=3):
     records = [json.loads(p.read_text()) for p in files]
     rows = [{'file': p.name, 'run_id': a['run_id'], 'state': a['state'], 'audit': audit_artifact(a)}
             for p, a in zip(files, records)]
-    summary = {'protocol': design.PROTOCOL, 'history_policy': design.HISTORY_POLICY,
+    policies = sorted({a['identity']['history_policy'] for a in records})
+    summary = {'protocol': design.PROTOCOL, 'history_policies': policies,
+               'history_policy': policies[0] if len(policies) == 1 else None,
                'expected_conversations': expected,
                'completed_conversations': sum(a['state'] == 'completed' for a in records),
                'saved_responses': sum('provider_response_raw' in t for a in records for t in a['turns'].values()),
-               'runs': rows, 'operational_gate_pass': len(rows) == expected and all(all(r['audit'].values()) for r in rows)}
+               'runs': rows, 'operational_gate_pass': len(policies) == 1 and len(rows) == expected and all(all(r['audit'].values()) for r in rows)}
     summary['usage_by_workflow'] = {}
-    # All stages are main conversation. The other entries are disjoint subtotals.
-    for group in ('main', 'model_and_task', 'transition_report'):
+    # total = main + measurement_branch. Stage subtotals also partition total.
+    for group in ('total', 'main', 'measurement_branch', 'model_and_task', 'transition_report'):
         turns = [t for a in records for name, t in a['turns'].items()
-                 if (group == 'main' or name.endswith('_readout') == (group == 'transition_report'))
+                 if (group == 'total' or
+                     (group in ('main', 'measurement_branch') and t.get('conversation') == group) or
+                     (group in ('model_and_task', 'transition_report') and
+                      name.endswith('_readout') == (group == 'transition_report')))
                  and 'provider_usage' in t]
         usage = {}
         for field in ('prompt_tokens', 'completion_tokens'):
@@ -369,24 +386,24 @@ def write_summary(outdir, expected=3):
     return summary
 
 
-def block_cost_plan(world, arm, wrapper, repeats=3):
+def block_cost_plan(world, arm, wrapper, repeats=3, history_policy=design.HISTORY_POLICY):
     """Conservative ceiling from the admitted context, not a token-use forecast."""
     if type(repeats) is not int or repeats not in (1, 3):
         raise ValueError('one or three repeats required')
-    calls = design.schedule(world, arm, synthetic_answers(world))
+    calls = design.schedule(world, arm, synthetic_answers(world), history_policy)
     completion = repeats * sum(c['max_output_tokens'] for c in calls)
     if wrapper is None:
         return {'status': 'unavailable', 'reason': 'no verified deployment/rates',
-                'history_policy': design.HISTORY_POLICY,
+                'history_policy': history_policy,
                 'repeats': repeats, 'requests': len(calls) * repeats, 'maximum_completion_tokens': completion}
     config = wrapper['deployment']
     ceiling = repeats * sum(config['context']['tokens'] - c['max_output_tokens'] for c in calls)
     prices = config['pricing']
     result = {'status': 'local_unpriced' if config['profile'] == 'gemma_e4b' else 'estimated',
-              'history_policy': design.HISTORY_POLICY,
+              'history_policy': history_policy,
               'repeats': repeats, 'requests': len(calls) * repeats, 'maximum_completion_tokens': completion,
               'admitted_input_token_ceiling': ceiling,
-              'assumption': 'every complete retained-history request fills its admitted context and completion allowance; uncached prices; preflight excluded'}
+              'assumption': 'every actual policy-specific request fills its admitted context and completion allowance; uncached prices; preflight excluded'}
     if config['profile'] in controls.HOSTED_PROFILES:
         result.update(usd_ceiling=(ceiling * prices['input_per_million'] + completion * prices['output_per_million']) / 1e6,
                       rate_source=prices['source'])
@@ -394,6 +411,7 @@ def block_cost_plan(world, arm, wrapper, repeats=3):
 
 
 def run_suite(sc, args, outdir):
+    policy = design.check_history_policy(args.history_policy)
     if args.model_first_condition not in design.ARMS or args.request_profile not in controls.MODELS:
         raise ValueError('explicit model-first condition and request profile required')
     if (args.mode != 'det' or args.pilot_type != 'passive' or type(args.repeats) is not int
@@ -413,16 +431,16 @@ def run_suite(sc, args, outdir):
     wrapper = None
     if args.provider != 'dry-run':
         if pilot._git_dirty():
-            raise ValueError('real runs require a reviewed clean implementation commit')
+            raise ValueError('real runs require a clean implementation commit')
         if not args.deployment_config:
             raise ValueError('verified deployment and model-first stage/path evidence required')
         wrapper = json.loads(Path(args.deployment_config).read_text())
-        config = validate_config(wrapper, args.request_profile)
+        config = validate_config(wrapper, args.request_profile, policy)
         if args.model != config['model'] or args.base_url.rstrip('/') != config['endpoint'].rstrip('/'):
             raise ValueError('exact deployment model/endpoint mismatch')
     elif args.deployment_config:
         raise ValueError('dry runs must not use private readiness configurations')
-    planned_cost = block_cost_plan(world, args.model_first_condition, wrapper, args.repeats)
+    planned_cost = block_cost_plan(world, args.model_first_condition, wrapper, args.repeats, policy)
     print(json.dumps({'prelaunch_cost_plan': planned_cost}, sort_keys=True))
     Path(outdir).mkdir(parents=True, exist_ok=False)
     try:

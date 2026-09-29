@@ -36,48 +36,24 @@ The scenario names are `icl_det_gate_seed13` and `icl_det_gate_seed25`.
 Start, goal and queried pairs are derived from each world: the changed action
 plus four unchanged controls, using the existing deterministic selection.
 
-The planned local OFF extension is two worlds, each with all three conditions
-and three repeated conversations, using sampling seeds 0, 1 and 2. Run each
-block once under a new tag with the reviewed local configuration, keeping
+Each world supports all three conditions and three repeated conversations,
+using sampling seeds 0, 1 and 2 where supported. Use a fresh tag and verified
+configuration for each block, keeping
 K=budget=10, evidence seed 0 and output allowance 8192. Dry previews establish
 reference correctness, not deployment readiness or model performance.
 ON remains conditional on an imperfect, operationally valid OFF block and
 uses all three repeats for that same graph and condition. Its OFF reference
 must match the implementation commit, static prompts and deployment controls.
 
-## Single-model handoff
+## Execution and outputs
 
-After the reviewed implementation is committed and published, Maciej can fetch
-`origin/feature/icl-graph-availability` and check out the shared full commit SHA
-in a clean checkout. Confirm `git rev-parse HEAD` matches that SHA before running;
-do not substitute current main or the older experiment commit.
-Use the full implementation commit SHA supplied with the handoff.
-
-Use Python 3.11 or 3.12, with the standard library only; no package installation
-or credentials are needed for this offline check. From the repository root, use
-an unused output directory:
-
-```sh
-python3 -B run_pilot.py --protocol icl_graph_availability_v1 \
-  --scenario icl_det_gate_seed8 --mode det --graph-condition graph_ab \
-  --request-profile sol --provider dry-run --reasoning-mode off \
-  --repeats 3 --sampling-seeds 0 1 2 --max-tokens 8192 \
-  --out /tmp/icl_graph_sol_handoff --tag graph_ab_off
-```
-
-The first planned block is Sol, `graph_ab`, reasoning OFF, graph seed 8:
-three repeated conversations with two turns each. The dry run creates six
-synthetic answers, not model results or readiness evidence. Sol does not send
-sampling seeds; 0, 1 and 2 identify the repeated outputs. Use this single-model
-entry point; the three-model launcher is not required.
-
-Maciej reports Sol access, but a real launch command requires his exact provider,
-model version and deployment identifier, endpoint/API version, authentication
-method, supported OFF control and verification evidence, and context/output
-limits. The graph path currently uses OpenAI-compatible Chat Completions;
-Azure and direct OpenAI connection settings are not interchangeable. Review any
-provider-specific compatibility gap before launch. Keep credentials and private
-deployment configuration outside Git; do not use synthetic test configurations.
+Use Python 3.11 or 3.12, standard library only. Pin a clean implementation
+commit for matched runs. The single-model entry point above needs no launcher.
+Sol uses repeated-output labels 0/1/2, not provider sampling seeds.
+Confirm the exact provider, model/deployment ID, endpoint/API version,
+authentication and reasoning controls before any live run. Azure and direct
+OpenAI settings are not interchangeable. Keep credentials and deployment
+configuration outside Git; synthetic fixtures are not readiness evidence.
 
 Outputs are saved under `<out>/<tag>/`: one JSON per conversation and
 `summary.json`. Each run retains `turns.A` and `turns.B`, including prompts,
@@ -88,7 +64,7 @@ The default output root is `pilot_artifacts`; preserve incomplete runs too.
 ## Real-run readiness
 
 Real runs require a clean implementation commit, an unused output directory,
-and a reviewed non-secret `--deployment-config` JSON. Set `--model` and
+and a verified non-secret `--deployment-config` JSON. Set `--model` and
 `--base-url` to exactly its verified model/deployment and endpoint. No provider
 fallback, automatic resume, network retry, repair or history truncation is used.
 Legacy sampling/control CLI flags are rejected for this protocol; profiles
@@ -184,8 +160,8 @@ diagnostic, not a balanced reasoning-effect comparison.
 Real ON execution requires `--off-reference` pointing to that completed OFF
 directory, and checks matching commit, prompts, model and non-reasoning settings.
 
-Seed 8 is the original development graph; seeds 13 and 25 are additional
-eligible worlds, not new model results. Repeats within a graph are not
+The supported graph seeds are 8, 13 and 25. Eligibility and dry-run reference
+checks are not model-performance results. Repeats within a graph are not
 independent graph samples. Detection cannot measure false alarms here.
 Five queried pairs do not measure full graph learning.
 Supplying the graph adds explicit information and a shorter representation.

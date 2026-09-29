@@ -15,21 +15,22 @@ from experiments.preview_icl_model_first import compatible_identity, generate, p
 from test_icl_graph import args as graph_args, config, envelope, local_config
 
 
-def args(arm='model_first', provider='dry-run', profile='gemma_e4b'):
+def args(arm='model_first', provider='dry-run', profile='gemma_e4b', history_policy=m.HISTORY_POLICY):
     a = graph_args(profile=profile, provider=provider)
     a.protocol = m.PROTOCOL
     a.graph_condition = None
     a.model_first_condition = arm
     a.off_reference = None
+    a.history_policy = history_policy
     return a
 
 
-def wrapper(local=True, profile='gemma_e4b'):
+def wrapper(local=True, profile='gemma_e4b', history_policy=m.HISTORY_POLICY):
     c = local_config() if local else config(profile)
     if profile in controls.HOSTED_PROFILES:
         c['pricing'] = {'input_per_million': 1, 'output_per_million': 2, 'source': 'SYNTHETIC TEST ONLY'}
     return {'deployment': c,
-            'model_first': {'protocol': m.PROTOCOL, 'history_policy': m.HISTORY_POLICY,
+            'model_first': {'protocol': m.PROTOCOL, 'history_policy': history_policy,
                             'output_allowances': [4096, 8192],
                             'stage_limits_source': 'SYNTHETIC TEST ONLY',
                             'system_message_source': 'SYNTHETIC TEST ONLY',
@@ -71,8 +72,8 @@ class ContractIntegration(unittest.TestCase):
 
     def test_history_defect_and_policy_drift_caught(self):
         real = m.schedule
-        def branched(world, arm, answers):
-            calls = real(world, arm, answers)
+        def branched(world, arm, answers, policy=m.HISTORY_POLICY):
+            calls = real(world, arm, answers, policy)
             for call in calls:
                 if call['id'].startswith('B'):
                     call['messages'] = [x for x in call['messages'] if x['content'] != answers['A_readout']]
@@ -80,7 +81,7 @@ class ContractIntegration(unittest.TestCase):
         with patch.object(m, 'schedule', side_effect=branched):
             with self.assertRaisesRegex(ValueError, 'history example drift'):
                 m.verify_histories(m.load(8))
-        with patch.object(m, 'HISTORY_POLICY', 'wrong policy'):
+        with patch.object(m, 'HISTORY_POLICIES', ('wrong policy', m.HISTORY_POLICY)):
             with self.assertRaisesRegex(ValueError, 'history policy drift'):
                 m.verify_histories(m.load(8))
 
@@ -163,7 +164,7 @@ class ParserScorer(unittest.TestCase):
                 self.assertTrue(s['preservation']['truth']['all_four_correct'])
                 self.assertTrue(s['periods']['B']['detection_correct'])
                 self.assertTrue(s['periods']['B']['localization_correct'])
-                self.assertEqual(s['explicit_model']['status'], 'pending' if arm == 'model_first' else 'not_applicable')
+                self.assertEqual(s['explicit_model']['status'], 'not_scored_by_design' if arm == 'model_first' else 'not_applicable')
 
     def test_missing_available_only_one_pair_fails(self):
         del self.a['pairs'][0]['available']
@@ -414,9 +415,9 @@ class RunnerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'one or three'):
                     plan(repeats)
 
-    def run_mock(self, folder, arm='model_first', damage=None, count=mock_count):
+    def run_mock(self, folder, arm='model_first', damage=None, count=mock_count, history_policy=m.HISTORY_POLICY):
         world, answers = reference()
-        order = [c['id'] for c in m.schedule(world, arm, answers)]
+        order = [c['id'] for c in m.schedule(world, arm, answers, history_policy)]
         requests = []
         def provider(body, c, timeout):
             name = order[len(requests)]
@@ -428,7 +429,8 @@ class RunnerTests(unittest.TestCase):
         with patch.object(runner, 'call_provider', side_effect=provider), \
              patch.object(controls, 'count_local_request', side_effect=count), \
              patch.object(pilot, '_git_dirty', return_value=False):
-            a = runner.run_once(world, arm, 1, args(arm, 'openai'), wrapper(), folder)
+            a = runner.run_once(world, arm, 1, args(arm, 'openai', history_policy=history_policy),
+                                wrapper(history_policy=history_policy), folder)
         return a, requests
 
     def test_fitting_all_stages_and_offline_audit_serialized(self):
@@ -437,7 +439,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual([b['max_tokens'] for b in requests], [4096] * 6)
             self.assertTrue(all(runner.audit_artifact(json.loads(json.dumps(a))).values()))
             self.assertIn('system', [x['role'] for x in requests[0]['messages']])
-            self.assertEqual(a['scores']['explicit_model']['status'], 'pending')
+            self.assertEqual(a['scores']['explicit_model']['status'], 'not_scored_by_design')
         with tempfile.TemporaryDirectory() as t:
             a, requests = self.run_mock(t, arm='task_only')
             self.assertEqual([b['max_tokens'] for b in requests], [8192, 4096, 8192, 4096])
@@ -644,6 +646,127 @@ class RunnerTests(unittest.TestCase):
                 summarize([t])
 
 
+class HistoryPolicies(unittest.TestCase):
+    def test_preview_runner_and_locked_examples_for_both_policies(self):
+        world, answers = reference()
+        answers['A_task'] = ' \t malformed A task }{\n '
+        answers['A_readout'] = ' \n malformed A report }{\t '
+        for policy in m.HISTORY_POLICIES:
+            self.assertEqual(sum(len(m.verify_histories(m.load(s), policy)) for s in (8, 13, 25)), 9)
+            with tempfile.TemporaryDirectory() as t:
+                r = generate(Path(t) / 'preview', policy)
+                self.assertEqual(r['history_policy'], policy)
+                self.assertEqual(r['plan']['history_policy'], policy)
+                for name, expected in r['locked_history_checks'].items():
+                    self.assertEqual(m.digest((Path(t) / 'preview' / name).read_text()), expected)
+            for arm in m.ARMS:
+                flow = runner.requests(world, arm, policy)
+                call, calls = next(flow), []
+                while True:
+                    calls.append(copy.deepcopy(call))
+                    try:
+                        call = flow.send(answers[call['id']])
+                    except StopIteration:
+                        break
+                self.assertEqual(calls, m.schedule(world, arm, answers, policy))
+
+    def test_post_task_malformed_reports_and_audit_tamper(self):
+        policy = m.HISTORY_POLICIES[1]
+        malformed = ' \n A report complete but malformed }{\t '
+        def damage(name, env):
+            if name == 'A_readout':
+                env['choices'][0]['message']['content'] = malformed
+        for arm in m.ARMS:
+            with tempfile.TemporaryDirectory() as t:
+                a, bodies = RunnerTests().run_mock(t, arm, damage, history_policy=policy)
+            a = json.loads(json.dumps(a))
+            self.assertTrue(all(runner.audit_artifact(a).values()))
+            self.assertEqual(a['turns']['A_readout']['raw_response'], malformed)
+            self.assertFalse(a['scores']['periods']['A']['readout_parsed']['well_formed'])
+            for name, body in zip(a['run_order'], bodies):
+                if name.startswith('B'):
+                    self.assertNotIn(malformed, [x['content'] for x in body['messages']])
+                    self.assertIn(a['turns']['A_task']['raw_response'], [x['content'] for x in body['messages']])
+                self.assertTrue(all(set(x) == {'role', 'content'} for x in body['messages']))
+            for name in (n for n in a['turns'] if n.startswith('B')):
+                bad = copy.deepcopy(a)
+                turn = bad['turns'][name]
+                for role, field in (('user', 'prompt'), ('assistant', 'raw_response')):
+                    turn['request_body']['messages'].insert(-1, {'role': role, 'content': a['turns']['A_readout'][field]})
+                turn['parent_history'] = copy.deepcopy(turn['request_body']['messages'][:-1])
+                turn['parent_history_sha256'] = runner.canonical(turn['parent_history'])
+                turn['parent_history_id'] = 'history_' + turn['parent_history_sha256']
+                turn['request_sha256'] = runner.canonical(turn['request_body'])
+                turn['messages_sha256'] = runner.canonical(turn['request_body']['messages'])
+                self.assertFalse(runner.audit_artifact(bad)['history'])
+
+    def test_policy_identity_config_reporting_and_no_resume(self):
+        world, _ = reference()
+        with tempfile.TemporaryDirectory() as t:
+            paths, records = [], []
+            for policy in m.HISTORY_POLICIES:
+                p = Path(t) / policy
+                p.mkdir()
+                a = runner.run_once(world, 'model_first', 1, args(history_policy=policy), None, p)
+                records.append(a)
+                paths.append(p)
+                with self.assertRaisesRegex(ValueError, 'no overwrite or resume'):
+                    runner.run_once(world, 'model_first', 1, args(history_policy=policy), None, p)
+                other = next(x for x in m.HISTORY_POLICIES if x != policy)
+                with self.assertRaisesRegex(ValueError, 'output directory exists'):
+                    runner.run_suite(pilot.SCENARIOS['icl_det_gate_seed8'], args(history_policy=other), p)
+                c = wrapper(history_policy=policy)
+                runner.validate_config(c, 'gemma_e4b', policy)
+                with self.assertRaisesRegex(ValueError, 'stage-specific'):
+                    runner.validate_config(c, 'gemma_e4b', other)
+            self.assertNotEqual(records[0]['run_id'], records[1]['run_id'])
+            self.assertEqual(records[0]['scores'], records[1]['scores'])
+            self.assertEqual(records[0]['identity']['queries'], records[1]['identity']['queries'])
+            report = summarize(paths)
+            self.assertEqual(len(report['groups']), 2)
+            self.assertEqual(sum(g['completed'] for g in report['groups'].values()), 2)
+            for r in report['runs']:
+                self.assertEqual(r['description_score'], 'not_scored_by_design')
+                self.assertNotIn('manual_review', r)
+
+    def test_usage_partitions_include_branches_exactly_once(self):
+        for policy in m.HISTORY_POLICIES:
+            for arm in m.ARMS:
+                with tempfile.TemporaryDirectory() as t:
+                    a, _ = RunnerTests().run_mock(t, arm, history_policy=policy)
+                    s = runner.write_summary(t, expected=1)
+                self.assertTrue(s['operational_gate_pass'])
+                self.assertEqual(s['history_policies'], [policy])
+                u = s['usage_by_workflow']
+                n = 6 if arm == 'model_first' else 4
+                branches = 0 if policy == m.HISTORY_POLICY else 2
+                for field in ('prompt_tokens', 'completion_tokens'):
+                    self.assertEqual(u['total'][field]['sum'], sum(x['provider_usage'][field] for x in a['turns'].values()))
+                    self.assertEqual(u['total'][field]['sum'], (u['main'][field]['sum'] or 0) + (u['measurement_branch'][field]['sum'] or 0))
+                    self.assertEqual(u['total'][field]['sum'], u['model_and_task'][field]['sum'] + u['transition_report'][field]['sum'])
+                    self.assertEqual(u['total'][field]['n_responses'], n)
+                    self.assertEqual(u['measurement_branch'][field]['n_responses'], branches)
+
+    def test_both_policy_plans_and_stage_cost_ceilings(self):
+        for repeats in (1, 3):
+            plans = [plan(repeats, p) for p in m.HISTORY_POLICIES]
+            self.assertEqual(sum(p['conversations_per_model'] for p in plans), 6 * repeats)
+            self.assertEqual(sum(p['requests_per_model'] for p in plans), 28 * repeats)
+            for p in plans:
+                for b in p['blocks']:
+                    self.assertEqual(b['main_output_allowance'] + b['measurement_branch_output_allowance'], 24576 * repeats)
+                    c = wrapper(False, 'sol', p['history_policy'])
+                    costs = runner.block_cost_plan(m.load(8), b['condition'], c, repeats, p['history_policy'])
+                    self.assertEqual(costs['history_policy'], p['history_policy'])
+                    self.assertEqual(costs['requests'], b['requests'])
+                    self.assertEqual(costs['maximum_completion_tokens'], 24576 * repeats)
+                    self.assertEqual(costs['admitted_input_token_ceiling'], b['requests'] * c['deployment']['context']['tokens'] - costs['maximum_completion_tokens'])
+                    rates = c['deployment']['pricing']
+                    self.assertAlmostEqual(costs['usd_ceiling'],
+                        (costs['admitted_input_token_ceiling'] * rates['input_per_million'] +
+                         costs['maximum_completion_tokens'] * rates['output_per_million']) / 1e6)
+
+
 class ReportingAndCredentialReview(unittest.TestCase):
     def records(self, directory):
         a = runner.run_once(m.load(8), 'task_only', 1, args('task_only'), None, directory)
@@ -835,58 +958,6 @@ class ReportingAndCredentialReview(unittest.TestCase):
                 runner.call_provider({}, {'profile': 'gemma_e4b', 'endpoint': 'https://synthetic.invalid/v1'}, 1)
             http.assert_not_called()
         self.assertEqual(reads, [])
-
-
-class ManualReview(unittest.TestCase):
-    def setUp(self):
-        w, answers = reference()
-        self.a = {'run_id': 'synthetic', 'identity': {'condition': 'model_first'}, 'world': w,
-                  'turns': {k: {'raw_response': v} for k,v in answers.items()}}
-
-    def test_unreviewed_pending_and_other_conditions_na(self):
-        self.assertEqual(m.manual_results(self.a, [])['status'], 'pending')
-        f = m.manual_form(self.a, 'Pavlos')
-        self.assertEqual(m.manual_results(self.a, [f])['status'], 'pending')
-        self.a['identity']['condition'] = 'task_only'
-        self.assertEqual(m.manual_results(self.a, [])['status'], 'not_applicable')
-
-    def test_artifact_file_hash_must_match(self):
-        f = m.manual_form(self.a, 'Pavlos', 'a' * 64)
-        m.validate_manual(f, self.a, 'a' * 64)
-        with self.assertRaisesRegex(ValueError, 'source identity'):
-            m.validate_manual(f, self.a, 'b' * 64)
-
-    def test_source_spans_and_inheritance(self):
-        f = m.manual_form(self.a, 'Pavlos')
-        key = next(iter(f['periods']['B']))
-        raw = self.a['turns']['A_model']['raw_response']
-        claim = {'status': 'explicit', 'value': True, 'citations': [
-            {'period': 'A', 'start': 0, 'end': 9, 'quote': raw[:9], 'source_sha256': m.digest(raw)}]}
-        f['periods']['B'][key]['available'] = claim
-        with self.assertRaisesRegex(ValueError, 'inheritance'):
-            m.validate_manual(f, self.a)
-        raw_b = self.a['turns']['B_model']['raw_response']
-        claim['citations'].append({'period': 'B', 'start': 0, 'end': 9, 'quote': raw_b[:9], 'source_sha256': m.digest(raw_b)})
-        m.validate_manual(f, self.a)
-        claim['citations'][0]['quote'] = 'WRONG'
-        with self.assertRaisesRegex(ValueError, 'span/hash'):
-            m.validate_manual(f, self.a)
-
-    def test_completed_unknowns_and_disagreement_not_filled_from_truth(self):
-        fs = [m.manual_form(self.a, r) for r in ('Pavlos', 'Maciej')]
-        for f in fs:
-            f['complete'] = True
-        result = m.manual_results(self.a, fs)
-        self.assertEqual(result['scores']['A']['exact_all_rows']['value'], 0)
-        self.assertIsNone(result['scores']['A']['exact_conditional']['value'])
-        self.assertTrue(all(r['own_report_optimal'] is None for r in result['scores']['A']['routes'].values()))
-        key = next(iter(fs[0]['periods']['A']))
-        raw = self.a['turns']['A_model']['raw_response']
-        fs[0]['periods']['A'][key]['available'] = {'status': 'explicit', 'value': True,
-            'citations': [{'period': 'A', 'start': 0, 'end': 9, 'quote': raw[:9], 'source_sha256': m.digest(raw)}]}
-        result = m.manual_results(self.a, fs)
-        self.assertEqual(len(result['disagreements']), 1)
-        self.assertIsNone(result['disagreements'][0]['resolution'])
 
 
 if __name__ == '__main__':

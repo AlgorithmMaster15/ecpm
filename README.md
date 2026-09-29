@@ -9,6 +9,9 @@ balanced evidence from both periods and answers four probes: detection,
 localization, preservation, adaptation. Routes are scored by execution in the
 true simulator (expected cost and regret), never by the model's own judgment.
 
+[ICL experiments](docs/ICL.md): model-first and graph-availability protocols,
+offline commands, output formats and deployment requirements.
+
 ## What the experiment does
 
 ```mermaid

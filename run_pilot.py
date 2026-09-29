@@ -1703,6 +1703,8 @@ def main():
     ap.add_argument("--graph-condition", choices=["graph_ab", "graph_a", "logs_only"])
     ap.add_argument("--model-first-condition", choices=["model_first", "task_only", "graph_given"],
                     help="icl_model_first_v1 only: one locked workflow per block")
+    ap.add_argument("--history-policy", choices=["retained_reports_v2", "separate_reports_post_task_v1"],
+                    default="retained_reports_v2", help="icl_model_first_v1 only: retain reports or collect post-task copies")
     ap.add_argument("--request-profile", choices=["gemma_e4b", "gemma_31b", "sol", "gemma_31b_together"])
     ap.add_argument("--deployment-config",
                     help="graph protocol only: reviewed non-secret endpoint/readiness JSON")

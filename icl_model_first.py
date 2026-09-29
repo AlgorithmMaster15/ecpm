@@ -9,6 +9,18 @@ from pathlib import Path
 PROTOCOL = 'icl_model_first_v1'
 # Separate from PROTOCOL, which also fixes the route-query selection namespace.
 HISTORY_POLICY = 'retained_reports_v2'
+HISTORY_POLICIES = (HISTORY_POLICY, 'separate_reports_post_task_v1')
+
+
+def check_history_policy(policy):
+    if policy not in HISTORY_POLICIES:
+        raise ValueError('unknown model-first history policy')
+    return policy
+
+
+def conversation_kind(stage, policy):
+    check_history_policy(policy)
+    return 'measurement_branch' if stage == 'readout' and policy != HISTORY_POLICY else 'main'
 ARMS = ('model_first', 'task_only', 'graph_given')
 ROOT = Path(__file__).resolve().parent / "fixtures" / "icl_model_first"
 SYSTEM = 'Follow the instructions in each message and use the supplied evidence.'
@@ -76,7 +88,7 @@ def queries(world):
     return [{'query_id':f'q{i}','start':s,'goal':t,'kind':'anchor' if i==0 else 'sampled'} for i,(s,t) in enumerate([anchor]+ranked[:3])]
 
 def graph_text(view):
-    lines=['Current-period specification:','state | action | available | destination | p_success']
+    lines=['Current-period graph:','state | action | available | destination | p_success']
     for x in view['graph']:
         lines.append(f'{x["node"]} | {x["action"]} | true | {x["destination"]} | {x["p_success"]:g}')
     return '\n'.join(lines)
@@ -125,11 +137,12 @@ def prompts(world, period, arm):
         return {'model':e+'\n\n'+(MODEL_A if period=='A' else MODEL_B), 'task':task(world,period), 'readout':readout(world,period)}
     return {'task':e+'\n\n'+task(world,period), 'readout':e+'\n\n'+readout(world,period)}
 
-def schedule(world, arm, answers):
+def schedule(world, arm, answers, history_policy=HISTORY_POLICY):
     """Returns actual request histories with supplied synthetic/saved answer text.
-Every question and final answer is retained, including transition reports.
+Reports follow tasks; only the retained policy appends them to main history.
 Private provider reasoning is not input.
 """
+    check_history_policy(history_policy)
     history=[{'role':'system','content':SYSTEM}]; calls=[]
     for period in ('A','B'):
         p=prompts(world,period,arm)
@@ -140,9 +153,13 @@ Private provider reasoning is not input.
         history.append({'role':'user','content':p['task']})
         calls.append({'id':period+'_task','max_output_tokens':4096 if arm=='model_first' else 8192,'messages':copy.deepcopy(history)})
         history.append({'role':'assistant','content':answers[period+'_task']})
-        history.append({'role':'user','content':p['readout']})
-        calls.append({'id':period+'_readout','max_output_tokens':4096,'messages':copy.deepcopy(history)})
-        history.append({'role':'assistant','content':answers[period+'_readout']})
+        report=history+[{'role':'user','content':p['readout']}]
+        calls.append({'id':period+'_readout','max_output_tokens':4096,'messages':copy.deepcopy(report)})
+        if history_policy == HISTORY_POLICY:
+            history=report+[{'role':'assistant','content':answers[period+'_readout']}]
+    for call in calls:
+        call.update(history_policy=history_policy,
+                    conversation=conversation_kind(call['id'].split('_',1)[1], history_policy))
     return calls
 
 def shortest(rows, start, goal):
@@ -240,16 +257,17 @@ def verify_prompts(w):
     return results
 
 
-def verify_histories(w):
-    if lock().get('history_policy') != HISTORY_POLICY:
+def verify_histories(w, history_policy=HISTORY_POLICY):
+    check_history_policy(history_policy)
+    if lock().get('history_policies') != list(HISTORY_POLICIES):
         raise ValueError('locked history policy drift')
     answers = {p + '_' + s: f'SYNTHETIC {p}_{s}; NOT A MODEL RESULT'
                for p in ('A', 'B') for s in ('model', 'task', 'readout')}
     result = {}
     for arm in ARMS:
-        raw = json.dumps(schedule(w, arm, answers), indent=2) + '\n'
+        raw = json.dumps(schedule(w, arm, answers, history_policy), indent=2) + '\n'
         path = f'prompts/seed_{w["seed"]}/{arm}/request_history_example.json'
-        if digest(raw) != lock()['files_sha256'][path]:
+        if digest(raw) != lock()['history_files_sha256'][history_policy][path]:
             raise ValueError('locked history example drift: ' + path)
         result[path] = digest(raw)
     return result
@@ -546,7 +564,7 @@ def preservation(a, b, w):
 
 def score_conversation(w, arm, turns):
     result = {'scorer': SCORER, 'periods': {},
-              'explicit_model': {'status': 'pending' if arm == 'model_first' else 'not_applicable'}}
+              'explicit_model': {'status': 'not_scored_by_design' if arm == 'model_first' else 'not_applicable'}}
     parsed_readouts = {}
     for period in ('A', 'B'):
         task_parsed = parse_task(turns[period + '_task']['raw_response'], w, period)
@@ -570,123 +588,3 @@ def score_conversation(w, arm, turns):
                     == tuple(w['target']))
     result['preservation'] = preservation(parsed_readouts['A'], parsed_readouts['B'], w)
     return result
-
-
-def manual_form(artifact, reviewer, source_file_sha256=None):
-    """A blank extraction form, not fabricated reviewer work or oracle hints."""
-    if artifact['identity']['condition'] != 'model_first' or reviewer not in ('Pavlos', 'Maciej'):
-        raise ValueError('manual extraction is for the two model-first reviewers')
-    return {'run_id': artifact['run_id'], 'reviewer': reviewer, 'complete': False,
-            'source_artifact_sha256': source_file_sha256 or digest(json.dumps(artifact, sort_keys=True)),
-            'artifact_hash_kind': 'file_bytes' if source_file_sha256 else 'canonical_json_synthetic_fixture',
-            'source_hashes': {p: digest(artifact['turns'][p + '_model']['raw_response']) for p in ('A', 'B')},
-            'periods': {p: {pair_id(key): {field: {'status': 'unknown', 'value': None, 'citations': []}
-                                          for field in TRANSITION_FIELDS}
-                            for key in pair_keys(artifact['world'][p])} for p in ('A', 'B')}}
-
-
-def validate_manual(form, artifact, source_file_sha256=None):
-    expected = manual_form(artifact, form.get('reviewer'), source_file_sha256)
-    if (form.get('run_id') != expected['run_id'] or form.get('source_hashes') != expected['source_hashes']
-            or form.get('source_artifact_sha256') != expected['source_artifact_sha256']
-            or form.get('artifact_hash_kind') != expected['artifact_hash_kind']
-            or type(form.get('complete')) is not bool or set(form.get('periods', {})) != {'A', 'B'}):
-        raise ValueError('manual source identity/period mismatch')
-    for period in ('A', 'B'):
-        rows = form['periods'][period]
-        if set(rows) != set(expected['periods'][period]):
-            raise ValueError('manual review must cover all 16 pairs, including unknowns')
-        for key, fields in rows.items():
-            if set(fields) != set(TRANSITION_FIELDS):
-                raise ValueError('manual fields must be explicit or unknown')
-            for field, claim in fields.items():
-                if (not isinstance(claim, dict) or set(claim) != {'status', 'value', 'citations'}
-                        or claim['status'] not in ('explicit', 'unknown', 'conflict')
-                        or not isinstance(claim['citations'], list)):
-                    raise ValueError('invalid manual claim')
-                if claim['status'] == 'explicit':
-                    value = claim['value']
-                    valid = (type(value) is bool if field == 'available' else
-                             value is None or (isinstance(value, str) and value in artifact['world'][period]['nodes'])
-                             if field == 'destination' else value is None or finite_probability(value))
-                    if not valid or not claim['citations']:
-                        raise ValueError('explicit manual fact needs typed value and citations')
-                elif claim['value'] is not None:
-                    raise ValueError('unknown/conflicting manual facts must not invent values')
-                cited_periods = set()
-                for cite in claim['citations']:
-                    if not isinstance(cite, dict) or set(cite) != {'period', 'start', 'end', 'quote', 'source_sha256'}:
-                        raise ValueError('invalid citation shape')
-                    p = cite['period']
-                    if p not in (('A',) if period == 'A' else ('A', 'B')):
-                        raise ValueError('future/unknown source citation')
-                    raw = artifact['turns'][p + '_model']['raw_response']
-                    if (type(cite['start']) is not int or type(cite['end']) is not int
-                            or not 0 <= cite['start'] < cite['end'] <= len(raw)
-                            or raw[cite['start']:cite['end']] != cite['quote']
-                            or cite['source_sha256'] != digest(raw)):
-                        raise ValueError('manual source span/hash mismatch')
-                    cited_periods.add(p)
-                if period == 'B' and 'A' in cited_periods and 'B' not in cited_periods:
-                    raise ValueError('inheritance needs both the B rule and original A citation')
-    return form
-
-
-def manual_results(artifact, reviews, resolutions=None, source_file_sha256=None):
-    """Resolve by reviewed citations, never by reading the truth to fill gaps.
-
-    A resolution selects an existing reviewer's claim or leaves a disagreement
-    unknown. The validator checks provenance, not whether a quote entails a fact.
-    """
-    if artifact['identity']['condition'] != 'model_first':
-        return {'status': 'not_applicable'}
-    checked = [validate_manual(r, artifact, source_file_sha256) for r in reviews]
-    if len({r['reviewer'] for r in checked}) != len(checked):
-        raise ValueError('duplicate reviewer')
-    if len(checked) != 2 or not all(r['complete'] for r in checked):
-        return {'status': 'pending', 'review_count': len(checked), 'scores': None}
-    resolutions = resolutions or {}
-    used, disagreements, output = set(), [], {}
-    for period in ('A', 'B'):
-        parsed = {'rows': {}, 'complete_model': True}
-        coverage_fields = 0
-        for key in pair_keys(artifact['world'][period]):
-            value = {'state': key[0], 'action': key[1]}
-            all_explicit = True
-            for field in TRANSITION_FIELDS:
-                claims = [r['periods'][period][pair_id(key)][field] for r in checked]
-                chosen = claims[0]
-                if (claims[0]['status'], claims[0]['value']) != (claims[1]['status'], claims[1]['value']):
-                    issue = f'{period}/{pair_id(key)}/{field}'
-                    selection = resolutions.get(issue)
-                    disagreements.append({'field': issue, 'resolution': selection, 'claims': claims})
-                    if selection is not None:
-                        if set(selection) != {'reviewer', 'note'} or not selection['note']:
-                            raise ValueError('resolution needs reviewer selection and note')
-                        used.add(issue)
-                        if selection['reviewer'] not in ('Pavlos', 'Maciej', 'unknown'):
-                            raise ValueError('resolution cannot invent new facts')
-                        chosen = next((c for r, c in zip(checked, claims) if r['reviewer'] == selection['reviewer']),
-                                      {'status': 'unknown', 'value': None})
-                    else:
-                        chosen = {'status': 'unknown', 'value': None}
-                explicit = chosen['status'] == 'explicit'
-                coverage_fields += explicit
-                all_explicit &= explicit
-                value[field] = chosen['value'] if explicit else None
-            valid = all_explicit and transition_valid(value, artifact['world'][period]['nodes'])
-            parsed['rows'][pair_id(key)] = {'value': value, 'transition_valid': bool(valid), 'changed_valid': False}
-            parsed['complete_model'] &= bool(valid)
-        truth = {(r['node'], r['action']): r for r in artifact['world'][period]['graph']}
-        valid_rows = [r for r in parsed['rows'].values() if r['transition_valid']]
-        exact = sum(all(r['value'][f] == truth[(r['value']['state'], r['value']['action'])][f]
-                        for f in TRANSITION_FIELDS) for r in valid_rows)
-        tasks = parse_task(artifact['turns'][period + '_task']['raw_response'], artifact['world'], period)
-        output[period] = {'field_coverage': fraction(coverage_fields, 48), 'row_coverage': fraction(len(valid_rows), 16),
-                          'exact_all_rows': fraction(exact, 16), 'exact_conditional': fraction(exact, len(valid_rows)),
-                          'routes': {q['query_id']: route_diagnostic(tasks['routes'][q['query_id']], parsed, q)
-                                     for q in queries(artifact['world'])}}
-    if set(resolutions) != used:
-        raise ValueError('unknown or unnecessary adjudication entry')
-    return {'status': 'review_complete', 'disagreements': disagreements, 'scores': output,
-            'basis': 'human extracted, span-checked; entailment not automatically verified'}

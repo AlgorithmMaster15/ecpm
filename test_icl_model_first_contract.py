@@ -55,10 +55,11 @@ class ContractTests(unittest.TestCase):
             if key.startswith('B'):
                 future[key]='FUTURE ANSWER SENTINEL'
         for arm in d.ARMS:
-            before=[c for c in d.schedule(w,arm,answers) if c['id'].startswith('A')]
-            after=[c for c in d.schedule(changed,arm,future) if c['id'].startswith('A')]
-            self.assertEqual(before,after)
-            self.assertNotIn('FUTURE',json.dumps(after))
+            for policy in d.HISTORY_POLICIES:
+                before=[c for c in d.schedule(w,arm,answers,policy) if c['id'].startswith('A')]
+                after=[c for c in d.schedule(changed,arm,future,policy) if c['id'].startswith('A')]
+                self.assertEqual(before,after)
+                self.assertNotIn('FUTURE',json.dumps(after))
 
     def test_no_representation_or_route_queries_before_construction(self):
         w=d.load(8)
@@ -103,6 +104,45 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(d.HISTORY_POLICY,'retained_reports_v2')
         for seed,pairs in expected.items():
             self.assertEqual([(q['start'],q['goal']) for q in d.queries(d.load(seed))],pairs)
+
+    def test_both_policies_complete_expected_history(self):
+        answers={p+'_'+s:f' \nMALFORMED EXACT {p}_{s} }}{{\t '
+                 for p in ('A','B') for s in ('model','task','readout')}
+        for seed in (8,13,25):
+            w=d.load(seed)
+            for arm in d.ARMS:
+                for policy in d.HISTORY_POLICIES:
+                    main=[{'role':'system','content':d.SYSTEM}]
+                    for call in d.schedule(w,arm,answers,policy):
+                        period,stage=call['id'].split('_',1)
+                        expected=main+[{'role':'user','content':d.prompts(w,period,arm)[stage]}]
+                        self.assertEqual(call['messages'],expected)
+                        self.assertEqual(call['history_policy'],policy)
+                        texts=[x['content'] for x in expected]
+                        if stage=='readout':
+                            self.assertIn(answers[period+'_task'],texts)
+                        if period=='B':
+                            self.assertIn(answers['A_task'],texts)
+                            if arm=='model_first':
+                                self.assertIn(answers['A_model'],texts)
+                            for value in (answers['A_readout'],d.prompts(w,'A',arm)['readout']):
+                                self.assertEqual(value in texts,policy==d.HISTORY_POLICY)
+                        else:
+                            self.assertFalse(any(answers['B_'+s] in texts for s in ('model','task','readout')))
+                        branch=stage=='readout' and policy!=d.HISTORY_POLICY
+                        self.assertEqual(call['conversation'],'measurement_branch' if branch else 'main')
+                        if not branch:
+                            main=expected+[{'role':'assistant','content':answers[call['id']]}]
+
+    def test_graph_heading_only_in_graph_given(self):
+        for seed in (8,13,25):
+            for period in ('A','B'):
+                for arm in d.ARMS:
+                    for text in d.prompts(d.load(seed),period,arm).values():
+                        self.assertEqual('Current-period graph:' in text,arm=='graph_given')
+                        self.assertNotIn('Current-period specification:',text)
+                        if arm!='graph_given':
+                            self.assertNotIn('graph',text.lower())
 
     def test_matched_allowances_and_request_count(self):
         w=d.load(8); answers={p+'_'+s:'visible answer' for p in ('A','B') for s in ('model','task','readout')}

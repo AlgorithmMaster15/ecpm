@@ -1,8 +1,6 @@
 # docs
 
-- [ICL_MODEL_FIRST.md](ICL_MODEL_FIRST.md): locked model-first workflow, offline checks and single-model handoff.
-
-- [ICL_GRAPH.md](ICL_GRAPH.md): graph-availability follow-up and offline checks.
+- [ICL.md](ICL.md): model-first and graph-availability experiments, commands and readiness requirements.
 
 - `INTERFACE.md` the frozen answer contract and record schema. Section 7 is
   what `ecpm_parser.py` implements.

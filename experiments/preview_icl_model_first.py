@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline previews, saved-score reports and manual-review forms. No API calls."""
+"""Offline previews and saved-score reports. No API calls."""
 
 import argparse
 import hashlib
@@ -20,16 +20,19 @@ def save(path, value):
         stream.write(value if isinstance(value, str) else json.dumps(value, indent=2, sort_keys=True) + '\n')
 
 
-def plan(repeats=1):
+def plan(repeats=1, history_policy=design.HISTORY_POLICY):
+    design.check_history_policy(history_policy)
     if type(repeats) is not int or repeats not in (1, 3):
         raise ValueError('one or three repeats required')
-    return {'protocol': design.PROTOCOL, 'history_policy': design.HISTORY_POLICY,
+    branched = history_policy != design.HISTORY_POLICY
+    return {'protocol': design.PROTOCOL, 'history_policy': history_policy,
             'status': 'offline only; deployment not ready',
             'first_graph_seed': 8, 'repeats_per_condition': repeats,
             'sampling_seed_labels': list(range(repeats)), 'reasoning': 'off',
             'blocks': [{'condition': arm, 'conversations': repeats,
                         'requests': repeats * (6 if arm == 'model_first' else 4),
-                        'main_output_allowance': repeats * 24576,
+                        'main_output_allowance': repeats * (16384 if branched else 24576),
+                        'measurement_branch_output_allowance': repeats * (8192 if branched else 0),
                         'model_and_task_output_allowance': repeats * 16384,
                         'transition_report_output_allowance': repeats * 8192}
                        for arm in design.ARMS],
@@ -39,40 +42,41 @@ def plan(repeats=1):
             'preflights': 'excluded; separately authorized only',
             'input_tokens': None, 'cost_usd': None, 'cost_status': 'unavailable',
             'assumptions': ['Completion counts are ceilings, not expected usage.',
-                            'Input includes every preceding question and actual final model/task/transition-report answer, with verified template accounting.',
-                            'Earlier branched-history input estimates do not apply to this longer retained history.',
+                            'Count each policy-specific rendered request, including every retained actual answer and the current report question.',
+                            'Retained reports enter B; post-task copies exclude previous reports, not earlier evidence or task/model answers.',
                             'No previous answer bounds every future answer; count each actual request.',
                             'Uncached USD = input_tokens * input_rate / 1e6 + completion_tokens * output_rate / 1e6.',
-                            'All requests belong to main; model/task and transition-report usage are subtotals, not extra branches.'],
+                            'Total usage equals main plus measurement branches; model/task and report subtotals are an alternative partition, not extra usage.'],
             'deployment': {'provider': None, 'endpoint': None, 'exact_model': None,
                            'tokenizer_template_verified': False, 'stage_limits_verified': False,
                            'input_usd_per_million': None, 'output_usd_per_million': None}}
 
 
-def conversation_example(world, arm, answers):
-    """Readable complete transcript; request ranges show retained input exactly."""
-    calls = design.schedule(world, arm, answers)
+def conversation_example(world, arm, answers, history_policy=design.HISTORY_POLICY):
+    """Complete inputs and answers per request, including independent copies."""
+    calls = design.schedule(world, arm, answers, history_policy)
     lines = [f'# Seed {world["seed"]}: {arm}', '',
-             f'History policy: `{design.HISTORY_POLICY}`. SYNTHETIC REFERENCE, NOT MODEL OUTPUT.', '',
-             'Every request contains the system message and every preceding question and final answer.',
-             'Transition reports remain in main history. No provider-private reasoning is replayed.', '',
-             '| Request | Input messages | Input text characters | Output allowance |',
-             '| --- | --- | --- | --- |']
+             f'History policy: `{history_policy}`. SYNTHETIC REFERENCE, NOT MODEL OUTPUT.', '',
+             'Each section shows the complete request in order, then its synthetic final answer.',
+             'Repeated text below represents retained input, not extra generation calls.',
+             'No provider-private reasoning is replayed.', '',
+             '| Request | Conversation | Input messages | Input text characters | Output allowance |',
+             '| --- | --- | --- | --- | --- |']
     for call in calls:
-        lines.append(f'| {call["id"]} | 1..{len(call["messages"])} | '
+        lines.append(f'| {call["id"]} | {call["conversation"]} | {len(call["messages"])} | '
                      f'{sum(len(m["content"]) for m in call["messages"])} | {call["max_output_tokens"]} |')
     lines += ['', 'Character counts are not tokenizer counts or future-answer bounds. Actual request',
-              'admission needs verified template/tokenizer or hosted context evidence.', '',
-              '## Message 1: system', '', '```text', design.SYSTEM, '```', '']
-    for index, call in enumerate(calls):
-        lines += [f'## Message {2 * index + 2}: user ({call["id"]})', '',
-                  '```text', call['messages'][-1]['content'], '```', '',
-                  f'## Message {2 * index + 3}: assistant ({call["id"]})', '',
-                  '```text', answers[call['id']], '```', '']
+              'admission needs verified template/tokenizer or hosted context evidence.', '']
+    for call in calls:
+        lines += [f'## {call["id"]}: {call["conversation"]}', '']
+        for index, message in enumerate(call['messages'], 1):
+            lines += [f'### Input {index}: {message["role"]}', '', '```text', message['content'], '```', '']
+        lines += ['### Synthetic final answer', '', '```text', answers[call['id']], '```', '']
     return '\n'.join(lines)
 
 
-def generate(out):
+def generate(out, history_policy=design.HISTORY_POLICY):
+    design.check_history_policy(history_policy)
     out = Path(out)
     if out.exists():
         raise ValueError('review output exists; use an unused directory')
@@ -81,7 +85,7 @@ def generate(out):
     for seed in (8, 13, 25):
         world = design.verify_world(seed)
         manifest.update(design.verify_prompts(world))
-        history_checks.update(design.verify_histories(world))
+        history_checks.update(design.verify_histories(world, history_policy))
         answers = runner.synthetic_answers(world)
         locked_answers = {p + '_' + s: f'SYNTHETIC {p}_{s}; NOT A MODEL RESULT'
                           for p in ('A', 'B') for s in ('model', 'task', 'readout')}
@@ -89,13 +93,13 @@ def generate(out):
             for period in ('A', 'B'):
                 for stage, text in design.prompts(world, period, arm).items():
                     save(out / 'prompts' / f'seed_{seed}' / arm / f'{period}_{stage}.txt', text + '\n')
-            raw_example = json.dumps(design.schedule(world, arm, locked_answers), indent=2) + '\n'
+            raw_example = json.dumps(design.schedule(world, arm, locked_answers, history_policy), indent=2) + '\n'
             save(out / 'prompts' / f'seed_{seed}' / arm / 'request_history_example.json', raw_example)
-            history = design.schedule(world, arm, answers)
+            history = design.schedule(world, arm, answers, history_policy)
             save(out / 'histories' / f'seed_{seed}_{arm}.json', {
-                'synthetic': True, 'history_policy': design.HISTORY_POLICY, 'requests': history})
+                'synthetic': True, 'history_policy': history_policy, 'requests': history})
             if seed == 8:
-                save(out / 'examples' / f'seed_8_{arm}.md', conversation_example(world, arm, answers))
+                save(out / 'examples' / f'seed_8_{arm}.md', conversation_example(world, arm, answers, history_policy))
             turns = {key: {'raw_response': value} for key, value in answers.items()}
             scored = design.score_conversation(world, arm, turns)
             for p in ('A', 'B'):
@@ -131,16 +135,16 @@ def generate(out):
                            'bundle_has_one_extra_trailing_LF' if extra_lf_match else 'unresolved',
                        'published_bytes': len(raw),
                        'bundle_bytes': len(raw) + 1 if extra_lf_match else len(raw) if expected == actual else None})
-    report = {'protocol': design.PROTOCOL, 'history_policy': design.HISTORY_POLICY,
+    report = {'protocol': design.PROTOCOL, 'history_policy': history_policy,
               'model_calls': 0, 'deployment_ready': False,
               'base_commit': design.lock()['source_commit'], 'prompt_files_exact': len(manifest),
               'prompt_checks': manifest, 'reference_checks': checks,
               'locked_history_checks': history_checks,
-              'source_reconciliation': source, 'plan': plan(), 'later_expansion_plan': plan(3)}
+              'source_reconciliation': source, 'plan': plan(1, history_policy), 'later_expansion_plan': plan(3, history_policy)}
     save(out / 'offline_report.json', report)
     save(out / 'references.json', references)
-    save(out / 'run_plan.json', plan())
-    save(out / 'later_expansion_plan.json', plan(3))
+    save(out / 'run_plan.json', plan(1, history_policy))
+    save(out / 'later_expansion_plan.json', plan(3, history_policy))
     return report
 
 
@@ -198,8 +202,8 @@ def summarize(paths):
                         'operational_audit': audit, 'disposition': disposition,
                         'included_in_scientific_scores': included,
                         'scores': a.get('scores') if included else None,
-                        'manual_review': 'pending' if a['identity']['condition'] == 'model_first' else 'not_applicable',
-                        'stages': {k: {f: t.get(f) for f in ('provider_usage', 'provider_finish_reason', 'cost', 'elapsed_s')}
+                        'description_score': 'not_scored_by_design' if a['identity']['condition'] == 'model_first' else 'not_applicable',
+                        'stages': {k: {f: t.get(f) for f in ('history_policy', 'conversation', 'provider_usage', 'provider_finish_reason', 'cost', 'elapsed_s')}
                                    for k, t in a['turns'].items()}})
     summary = {}
     for key, rows in groups.items():
@@ -246,33 +250,20 @@ def summarize(paths):
                 'all_four_correct': design.fraction(sum(p['all_four_correct'] for p in ps), len(ps))}
         summary[key] = group
     return {'protocol': design.PROTOCOL, 'groups': summary, 'runs': details,
-            'interpretation': 'Repeated outputs within each graph; no independence or significance claim. Explicit-model scores pending human review.'}
+            'interpretation': 'Repeated outputs within each graph; no independence or significance claim. Free-form descriptions are saved, not scored by design.'}
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--out', required=True)
-    options = ap.add_mutually_exclusive_group()
-    options.add_argument('--summarize', nargs='+')
-    options.add_argument('--manual-template', help='completed model-first artifact')
-    options.add_argument('--manual-import', help='model-first artifact to match reviewed forms')
-    ap.add_argument('--reviewer', choices=['Pavlos', 'Maciej'])
-    ap.add_argument('--reviews', nargs='+')
-    ap.add_argument('--resolutions')
+    ap.add_argument('--history-policy', choices=design.HISTORY_POLICIES, default=design.HISTORY_POLICY,
+                    help='policy for previews and plans; saved-score reports use recorded identities')
+    ap.add_argument('--summarize', nargs='+')
     a = ap.parse_args()
     if a.summarize:
         save(a.out, summarize(a.summarize))
-    elif a.manual_template:
-        raw = Path(a.manual_template).read_bytes()
-        save(a.out, design.manual_form(json.loads(raw), a.reviewer, hashlib.sha256(raw).hexdigest()))
-    elif a.manual_import:
-        reviews = [json.loads(Path(p).read_text()) for p in (a.reviews or [])]
-        resolutions = json.loads(Path(a.resolutions).read_text()) if a.resolutions else None
-        raw = Path(a.manual_import).read_bytes()
-        result = design.manual_results(json.loads(raw), reviews, resolutions, hashlib.sha256(raw).hexdigest())
-        save(a.out, result)
     else:
-        report = generate(a.out)
+        report = generate(a.out, a.history_policy)
         print(json.dumps({'prompt_files_exact': report['prompt_files_exact'], 'model_calls': 0, 'deployment_ready': False}))
 
 
