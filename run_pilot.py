@@ -1848,7 +1848,8 @@ def run_pilot_active(sc, deterministic, args):
         "probes": {},
     }
 
-    system_prompt = explore_agent.build_system_prompt(record["goal"])
+    system_prompt = explore_agent.build_system_prompt(
+        record["goal"], record["start"], cfg.max_steps_per_episode)
     for probe in sc["probes"]:
         ask = ASKS_ACTIVE[probe]
         if probe == "preservation":

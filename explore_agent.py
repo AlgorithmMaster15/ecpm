@@ -184,22 +184,24 @@ def parse_step_action(text, legal_menu) -> dict:
 # --------------------------------------------------------------------------
 
 
-def build_system_prompt(goal) -> str:
+def build_system_prompt(goal, start, horizon) -> str:
     return (
         "You are exploring an unfamiliar courier network of locations "
         "connected by one-way links. At each location you may attempt one "
         "of the listed actions (aK). An attempt either delivers you to "
-        "that action's destination, or fails and you stay where you are "
-        "-- either way it costs one step. You do not know the network's "
-        "structure or reliabilities in advance: you must learn them by "
-        "trying actions and observing what happens. Your goal is to reach "
-        f"{goal} in as few steps as possible, across several episodes. "
-        "The network's reliabilities may or may not change between "
-        "episodes; nothing will tell you this directly -- watch your own "
-        "outcomes. For every step: you may reason briefly first, but end "
-        'your reply with exactly one JSON object of the form '
-        '{"action": "aK"} naming the single action you choose. Output no '
-        "other JSON object in your reply."
+        "that action's destination, or fails and you stay where you are. "
+        "Every attempt costs one step. You can learn where any action "
+        "leads or how reliable the link is only by trying actions and "
+        "watching the outcomes. You will play several episodes. Each "
+        f"episode starts at {start} and ends when you reach {goal} or "
+        f"after {horizon} steps. Your aim is to use as few steps as "
+        "possible in total, summed over all episodes. The network's "
+        "reliabilities may or may not change between episodes; nothing "
+        "will tell you this directly, so watch your own outcomes. On "
+        "each step, write at most two sentences of reasoning, then end "
+        'with exactly one JSON object: {"action": "<label>"}, where '
+        "<label> is one of the actions listed at your current location. "
+        "Output no other JSON object."
     )
 
 
@@ -501,7 +503,8 @@ def run_explore_instance(inst, cfg, act_fn=None, node_policy_fn=None) -> dict:
          "m1_episodes": [EpisodeOutcome, ...]}.
     """
     labels = inst.labels
-    system_prompt = build_system_prompt(inst.m0.goal)   # built once, reused for the whole run
+    system_prompt = build_system_prompt(   # built once, reused for the whole run
+        inst.m0.goal, inst.start, cfg.max_steps_per_episode)
     messages = []   # one shared, growing transcript across both phases
 
     def run_phase(mdp, phase, max_episodes, initial_note=None) -> list:
