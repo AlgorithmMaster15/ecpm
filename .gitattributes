@@ -27,3 +27,16 @@ LICENSE        text eol=lf
 # Binary, never touched.
 *.docx  binary
 *.png   binary
+
+# These published JSON archives predate the LF rule. Preserve their original
+# bytes so a fresh checkout stays clean without rewriting research evidence.
+runs/2026-08-23_gemma4e4b_lmstudio/pilot_deterministic.json -text
+runs/2026-08-23_gemma4e4b_lmstudio/pilot_stochastic.json -text
+runs/2026-08-23_gpt4o_azure_mt4096/pilot_deterministic.json -text
+runs/2026-08-23_gpt4o_azure_mt4096/pilot_stochastic.json -text
+runs/2026-08-23_sonnet46_mt1024/pilot_deterministic.json -text
+runs/2026-08-23_sonnet46_mt1024/pilot_deterministic_dryrun.json -text
+runs/2026-08-23_sonnet46_mt1024/pilot_stochastic.json -text
+runs/2026-08-23_sonnet46_mt1024/pilot_stochastic_dryrun.json -text
+runs/2026-08-23_sonnet46_mt4096/pilot_deterministic.json -text
+runs/2026-08-23_sonnet46_mt4096/pilot_stochastic.json -text

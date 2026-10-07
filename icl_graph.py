@@ -253,8 +253,8 @@ def reference_answer(view, earlier=None):
     return json.dumps(answer, separators=(",", ":")), estimates
 
 
-def intended_settings(profile, mode, seed, seed_supported=False):
-    if profile not in MODELS or mode not in ("off", "on") or seed not in (0, 1, 2, 999):
+def intended_settings(profile, mode, seed, seed_supported=False, allowed_seeds=(0, 1, 2, 999)):
+    if profile not in MODELS or mode not in ("off", "on") or type(seed) is not int or seed not in allowed_seeds:
         raise ValueError("unknown request profile, reasoning mode or seed")
     if profile == "sol":
         if seed_supported:

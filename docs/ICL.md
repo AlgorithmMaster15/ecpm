@@ -10,6 +10,9 @@ environments. Their prompts, histories and scores are not interchangeable.
   in history or use separate post-task copies.
 - [Graph availability](ICL_GRAPH.md): receive a graph in both periods, only in A,
   or neither period. Each conversation has two answers.
+- [Expanded passive ICL](ICL_EXPANDED.md): five arms, both histories,
+  deterministic/stochastic scenarios and route-updating scores.
+  Offline verification does not establish live deployment readiness.
 - [Interface](INTERFACE.md): earlier contracts and the frozen schema.
 
 Each experiment page includes offline commands, outputs and deployment

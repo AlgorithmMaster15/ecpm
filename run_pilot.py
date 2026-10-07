@@ -107,7 +107,7 @@ ALL_PROBES = ("detection", "localization", "preservation", "adaptation")
 # turn 2 reveals period B (turn 1 stays in context) and asks ALL_PROBES.
 TURN1_PROBES = ("route_pre", "belief_pre")
 REELICIT_PROBE = "belief_post"
-PROTOCOLS = ("legacy", "icl_two_response_v1", "icl_graph_availability_v1", "icl_model_first_v1")
+PROTOCOLS = ("legacy", "icl_two_response_v1", "icl_graph_availability_v1", "icl_model_first_v1", "icl_expanded_v2")
 ICL_LEVELS = ("empirical_table", "explained_logs", "minimal_logs")
 COST_STATUSES = ("exact", "estimated", "unavailable", "local_unpriced")
 
@@ -190,7 +190,8 @@ def resolve_scenario(args):
     if sc["rendering"] not in PROMPT_RENDERINGS:
         raise SystemExit(f"unknown rendering {sc['rendering']!r}; "
                          f"known: {', '.join(PROMPT_RENDERINGS)}")
-    if sc["condition"] == "no_change" and "localization" in sc["probes"]:
+    if (sc["condition"] == "no_change" and "localization" in sc["probes"]
+            and getattr(args, "protocol", None) != "icl_expanded_v2"):
         raise SystemExit("localization asserts a change occurred; drop it "
                          "for condition=no_change (--probes detection "
                          "preservation adaptation)")
@@ -1891,13 +1892,13 @@ def main():
                          "icl_two_response_v1 runs the additive 3-level "
                          "two-response protocol")
     ap.add_argument("--graph-condition", choices=["graph_ab", "graph_a", "logs_only"])
-    ap.add_argument("--model-first-condition", choices=["model_first", "task_only", "graph_given"],
-                    help="icl_model_first_v1 only: one locked workflow per block")
+    ap.add_argument("--model-first-condition", choices=["model_first", "task_only", "spontaneous", "graph_given", "baseline_task"],
+                    help="model-first/expanded protocols: one workflow per block")
     ap.add_argument("--history-policy", choices=["retained_reports_v2", "separate_reports_post_task_v1"],
-                    default="retained_reports_v2", help="icl_model_first_v1 only: retain reports or collect post-task copies")
+                    default="retained_reports_v2", help="model-first/expanded: retain reports or collect post-task copies")
     ap.add_argument("--request-profile", choices=["gemma_e4b", "gemma_31b", "sol", "gemma_31b_together"])
     ap.add_argument("--deployment-config",
-                    help="graph protocol only: reviewed non-secret endpoint/readiness JSON")
+                    help="reviewed non-secret endpoint/readiness JSON for the selected protocol")
     ap.add_argument("--off-reference",
                     help="graph protocol only: completed matched OFF directory for conditional ON")
     # what is asked
@@ -2016,6 +2017,10 @@ def main():
     if args.tag is None:
         args.tag = sc["name"]
     outdir = os.path.join(args.out, args.tag)
+    if args.protocol == "icl_expanded_v2":
+        import icl_expanded
+        icl_expanded.run_suite(sc, args, outdir)
+        return
     if args.protocol == "icl_model_first_v1":
         import icl_model_first_runner
         icl_model_first_runner.run_suite(sc, args, outdir)

@@ -88,6 +88,8 @@ def load(seed):
     return json.loads(raw)
 
 def queries(world):
+    if 'route_queries' in world:
+        return copy.deepcopy(world['route_queries'])
     # Selects from pairs reachable in Period A. Never reads Period B.
     a = world['A']; anchor = (a['start'], a['goal'])
     candidates = [(s,t) for s in sorted(a['nodes']) for t in sorted(a['nodes']) if s!=t and (s,t)!=anchor and shortest(a['graph'],s,t)['reachable']]
@@ -312,6 +314,8 @@ def strict_object(raw):
 
 
 def pair_keys(view):
+    if 'required_pairs' in view:
+        return [tuple(pair) for pair in view['required_pairs']]
     return [(s, a) for s in sorted(view['menu']) for a in view['menu'][s]]
 
 
@@ -421,7 +425,7 @@ def parse_task(raw, w, period):
         loc_valid = 'changed_pair' in obj_or_empty and (loc is None or (
             isinstance(loc, dict) and {'state', 'action'} <= set(loc)
             and isinstance(loc['state'], str) and isinstance(loc['action'], str)
-            and loc['action'] in v['menu'].get(loc['state'], [])))
+            and (loc['state'], loc['action']) in pair_keys(v)))
         if type(changed) is bool:
             loc_valid = loc_valid and ((not changed and loc is None) or (changed and loc is not None))
         loc_errors = ['unexpected localization fields'] if isinstance(loc, dict) and set(loc) - {'state', 'action'} else []
@@ -463,11 +467,12 @@ def score_readout(parsed, w, period):
         details[pair_id(key)] = {'transition_exact': bool(exact),
                                 'changed_correct': bool(label) if period == 'B' else None,
                                 'joint_exact': bool(exact and label) if period == 'B' else bool(exact)}
-    return {'transition_exact': fraction(sum(r['transition_exact'] for r in details.values()), 16),
-            'joint_exact': fraction(sum(r['joint_exact'] for r in details.values()), 16),
-            'changed_accuracy': fraction(changed_count, 16) if period == 'B' else None,
+    n = len(pair_keys(w[period]))
+    return {'transition_exact': fraction(sum(r['transition_exact'] for r in details.values()), n),
+            'joint_exact': fraction(sum(r['joint_exact'] for r in details.values()), n),
+            'changed_accuracy': fraction(changed_count, n) if period == 'B' else None,
             'complete_graph_exact': parsed['complete_model'] and all(r['transition_exact'] for r in details.values()),
-            'valid_rows': fraction(valid_count, 16),
+            'valid_rows': fraction(valid_count, n),
             'destination_accuracy_conditional': fraction(sum(destinations), len(destinations)),
             'p_mae_truth_conditional': {'sum': sum(errors), 'n': len(errors),
                                         'value': sum(errors) / len(errors) if errors else None},

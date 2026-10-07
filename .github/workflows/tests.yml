@@ -68,6 +68,8 @@ jobs:
           python test_icl_graph.py
           python test_icl_model_first_contract.py
           python test_icl_model_first.py
+          python test_icl_expanded.py
+          python agentic_conditions.py test
 
       # Dry-run providers make no API calls, so the pilots are runnable in CI.
       # This catches breakage in the harness that the suites do not reach.
