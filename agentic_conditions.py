@@ -11,9 +11,29 @@ task_only applies no wrapping at all, so it is the existing arm unchanged.
 
 Commands (repository root):
   python3 -B agentic_conditions.py test
-  python3 -B agentic_conditions.py run CONDITION -- <run_pilot.py arguments>
+  python3 -B agentic_conditions.py run CONDITION [--repeat R] -- <run_pilot.py arguments>
   python3 -B agentic_conditions.py batch OUTDIR [CONDITION ...] -- <provider arguments>
   python3 -B agentic_conditions.py estimate [--seeds 51]
+  python3 -B agentic_conditions.py exposure RUNS_DIR      # writes RUNS_DIR/exposure.csv
+
+Exposure. An agent can only show that it adapted to a change if its own route
+used the changed link. If its route before the change never went through that
+link, keeping the same route is correct anyway and its later answers about the
+change are guesses. Every run therefore records, for the changed link:
+  m0_route_uses  the agent's own route before the change (its last M0 episode)
+                 used the changed link. This is the flag that decides whether a
+                 run counts for adaptation metrics ("exposed").
+  m0_any_use     the agent used the changed link at least once in M0.
+  m1_attempts    how often it tried the changed link after the change.
+No change runs have no changed link, so their exposure fields are empty.
+
+Repeats. --repeat R (default 0) changes only the random outcomes of attempts
+(environment seed = graph seed * 100 + R); the graph itself stays the same. In the
+deterministic mode attempts are not random, so repeats differ only through the model.
+
+Token log. Every model call (steps, preparation turns, probes) records the
+provider's usage report in usage.json next to the run, with totals, so the cost of a
+single run can be read off directly. The exposure CSV includes these totals.
 """
 import json, os, re, statistics as st, sys
 import explore_agent as A
@@ -104,17 +124,95 @@ def activate(condition):
         A._build_recording_policy, A.run_explore_instance = _policy, _run
 
 
+# ---------------------------------------------------------------- exposure
+def exposure(artifact):
+    """Did the agent's own route meet the changed link? See the module docstring."""
+    ins = artifact["instance"]
+    cond = ins["condition"]
+    if cond == "no_change":
+        return {"changed_link": "", "m0_route_uses": "", "m0_any_use": "", "m1_attempts": "", "exposed": ""}
+    inst = make_pair(ins["graph_seed"], cond, matched=ins.get("matched", True), deterministic=ins.get("deterministic", False))
+    u, v = inst.change["edge"]
+    label = inst.labels[(u, v)]
+    uses = lambda ep: any(st["node"] == u and st.get("action_label") == label for st in ep["steps"])
+    m0 = artifact["explore"]["m0_episodes"]
+    m1 = artifact["explore"]["m1_episodes"]
+    route_uses = bool(m0) and uses(m0[-1])
+    return {"changed_link": f"{u}:{label}", "m0_route_uses": route_uses,
+            "m0_any_use": any(uses(ep) for ep in m0),
+            "m1_attempts": sum(1 for ep in m1 for st in ep["steps"] if st["node"] == u and st.get("action_label") == label),
+            "exposed": route_uses}
+
+
+def exposure_csv(runs_dir):
+    import csv
+    rows = []
+    for root, _, files in os.walk(runs_dir):
+        for f in sorted(files):
+            if f.startswith("pilot_") and f.endswith(".json"):
+                a = json.load(open(os.path.join(root, f)))
+                if "explore" not in a:
+                    continue
+                meta_p = os.path.join(root, "condition.json")
+                meta = json.load(open(meta_p)) if os.path.exists(meta_p) else {}
+                tot = meta.get("usage_totals", {})
+                rows.append({"run": os.path.relpath(os.path.join(root, f), runs_dir), "seed": a["instance"]["graph_seed"],
+                             "mode": "det" if a["instance"].get("deterministic") else "sto",
+                             "scenario": a["instance"]["condition"], "prompt_condition": meta.get("condition", "task_only"),
+                             "repeat": meta.get("repeat", 0), "model": (a.get("model") or {}).get("model", "") if isinstance(a.get("model"), dict) else a.get("model", ""),
+                             "calls": tot.get("calls", ""), "input_tokens": tot.get("input_tokens", ""),
+                             "output_tokens": tot.get("output_tokens", ""), **exposure(a)})
+    out = os.path.join(runs_dir, "exposure.csv")
+    with open(out, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]) if rows else ["run"])
+        w.writeheader(); w.writerows(rows)
+    n_exp = sum(1 for r in rows if r["exposed"] is True)
+    print(f"{len(rows)} runs, {n_exp} exposed, written to {out}")
+    return rows
+
+
 # ---------------------------------------------------------------- run / batch
-def run(condition, pilot_args):
+def _usage_totals(calls):
+    get = lambda u, *ks: sum(int(u.get(k, 0) or 0) for k in ks)
+    return {"calls": len(calls),
+            "input_tokens": sum(get(u, "prompt_tokens", "input_tokens") for u in calls),
+            "output_tokens": sum(get(u, "completion_tokens", "output_tokens") for u in calls)}
+
+
+def run(condition, pilot_args, repeat=0):
     activate(condition)
     import run_pilot
+    calls = []
+    orig_retry = run_pilot.with_retry
+    def logged(fn, *a, **kw):
+        res = orig_retry(fn, *a, **kw)
+        if isinstance(res, tuple) and res and isinstance(res[-1], dict):
+            calls.append(res[-1])
+        return res
+    run_pilot.with_retry = logged
+    orig_cfg = A.ExploreConfig
+    if repeat:
+        def cfg_factory(*a, **kw):
+            kw["seed"] = kw.get("seed", 0) * 100 + repeat
+            return orig_cfg(*a, **kw)
+        A.ExploreConfig = cfg_factory
     sys.argv = ["run_pilot.py"] + pilot_args
-    run_pilot.main()
+    try:
+        run_pilot.main()
+    finally:
+        run_pilot.with_retry, A.ExploreConfig = orig_retry, orig_cfg
     out = pilot_args[pilot_args.index("--out") + 1] if "--out" in pilot_args else "pilot_artifacts"
     tag = pilot_args[pilot_args.index("--tag") + 1] if "--tag" in pilot_args else None
-    if tag:   # sidecar: the condition is not in run_pilot's artifact schema
-        os.makedirs(os.path.join(out, tag), exist_ok=True)
-        json.dump({"condition": condition}, open(os.path.join(out, tag, "condition.json"), "w"))
+    if tag:   # sidecar: the condition and exposure are not in run_pilot's artifact schema
+        d = os.path.join(out, tag); os.makedirs(d, exist_ok=True)
+        meta = {"condition": condition, "repeat": repeat, "usage_totals": _usage_totals(calls)}
+        json.dump({"calls": calls, "totals": _usage_totals(calls)}, open(os.path.join(d, "usage.json"), "w"), indent=1)
+        for f in os.listdir(d):
+            if f.startswith("pilot_") and f.endswith(".json"):
+                a = json.load(open(os.path.join(d, f)))
+                if "explore" in a:
+                    meta["exposure"] = exposure(a)
+        json.dump(meta, open(os.path.join(d, "condition.json"), "w"))
 
 
 def batch(outdir, conditions, provider_args):
@@ -206,6 +304,21 @@ def test():
             u, v = inst.change["edge"]
             self.assertIn(f"{u} | {inst.labels[(u, v)]} | {v} | 0", specs[1])
             self.assertEqual(res["descriptions"], [])
+        def test_exposure(self):
+            activate("task_only")
+            inst = make_pair(33, "silent_break", matched=True)
+            u, v = inst.change["edge"]; lab = inst.labels[(u, v)]
+            other = next(l for (a, b), l in inst.labels.items() if a == u and b != v)
+            step = lambda node, l: {"node": node, "action_label": l}
+            art = lambda last: {"instance": {"graph_seed": 33, "condition": "silent_break", "matched": True, "deterministic": False},
+                                "explore": {"m0_episodes": [{"steps": [step(u, lab)]}, {"steps": [step(u, last)]}],
+                                            "m1_episodes": [{"steps": [step(u, lab), step(u, lab), step(u, other)]}]}}
+            e = exposure(art(lab))
+            self.assertTrue(e["exposed"]); self.assertEqual(e["m1_attempts"], 2); self.assertEqual(e["changed_link"], f"{u}:{lab}")
+            e = exposure(art(other))             # last M0 route avoids the link: not exposed, though used earlier
+            self.assertFalse(e["exposed"]); self.assertTrue(e["m0_any_use"])
+            nc = {"instance": {"graph_seed": 33, "condition": "no_change"}, "explore": {"m0_episodes": [], "m1_episodes": []}}
+            self.assertEqual(exposure(nc)["exposed"], "")
         def tearDown(self): activate("task_only")
     r = unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromTestCase(T))
     sys.exit(0 if r.wasSuccessful() else 1)
@@ -215,11 +328,12 @@ if __name__ == "__main__":
     argv = sys.argv[1:]
     rest = argv[argv.index("--") + 1:] if "--" in argv else []
     head = argv[:argv.index("--")] if "--" in argv else argv
-    if not head or head[0] not in ("run", "batch", "estimate", "test"):
+    if not head or head[0] not in ("run", "batch", "estimate", "test", "exposure"):
         print(__doc__); sys.exit(2)
     if head[0] == "test": test()
-    elif head[0] == "run": run(head[1], rest)
+    elif head[0] == "run": run(head[1], rest, int(head[head.index("--repeat") + 1]) if "--repeat" in head else 0)
     elif head[0] == "batch": batch(head[1], head[2:] or list(CONDITIONS), rest)
+    elif head[0] == "exposure": exposure_csv(head[1])
     else:
         n = int(head[head.index("--seeds") + 1]) if "--seeds" in head else 51
         estimate(n)
