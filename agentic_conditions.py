@@ -32,8 +32,11 @@ Repeats. --repeat R (default 0) changes only the random outcomes of attempts
 deterministic mode attempts are not random, so repeats differ only through the model.
 
 Token log. Every model call (steps, preparation turns, probes) records the
-provider's usage report in usage.json next to the run, with totals, so the cost of a
-single run can be read off directly. The exposure CSV includes these totals.
+provider's usage report in usage.json next to the run. Complete reports yield
+token totals; missing or conflicting reports yield null totals with reported
+subtotals and counts. Aliases are counted once. The exposure CSV includes these
+totals and completeness fields. Monetary cost still requires verified rates and
+billing reconciliation, including any unreported or failed attempts.
 """
 import json, os, re, statistics as st, sys
 import explore_agent as A
@@ -161,7 +164,10 @@ def exposure_csv(runs_dir):
                              "scenario": a["instance"]["condition"], "prompt_condition": meta.get("condition", "task_only"),
                              "repeat": meta.get("repeat", 0), "model": (a.get("model") or {}).get("model", "") if isinstance(a.get("model"), dict) else a.get("model", ""),
                              "calls": tot.get("calls", ""), "input_tokens": tot.get("input_tokens", ""),
-                             "output_tokens": tot.get("output_tokens", ""), **exposure(a)})
+                             "output_tokens": tot.get("output_tokens", ""),
+                             "usage_complete": tot.get("usage_complete", ""),
+                             "n_input_reported": tot.get("n_input_reported", ""),
+                             "n_output_reported": tot.get("n_output_reported", ""), **exposure(a)})
     out = os.path.join(runs_dir, "exposure.csv")
     with open(out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]) if rows else ["run"])
@@ -173,10 +179,28 @@ def exposure_csv(runs_dir):
 
 # ---------------------------------------------------------------- run / batch
 def _usage_totals(calls):
-    get = lambda u, *ks: sum(int(u.get(k, 0) or 0) for k in ks)
-    return {"calls": len(calls),
-            "input_tokens": sum(get(u, "prompt_tokens", "input_tokens") for u in calls),
-            "output_tokens": sum(get(u, "completion_tokens", "output_tokens") for u in calls)}
+    """Count alternate provider names once; unknown usage is not measured zero."""
+    conflicts = []
+    def total(field, names):
+        values = []
+        for i, usage in enumerate(calls):
+            if not isinstance(usage, dict):
+                continue
+            candidates = [usage[k] for k in names if usage.get(k) is not None]
+            if not candidates or any(type(v) is not int or v < 0 for v in candidates):
+                continue
+            if len(set(candidates)) != 1:
+                conflicts.append({"call": i, "field": field})
+                continue
+            values.append(candidates[0])
+        subtotal = sum(values) if values or not calls else None
+        return subtotal if len(values) == len(calls) else None, subtotal, len(values)
+    inp, reported_inp, n_inp = total("input", ("prompt_tokens", "input_tokens"))
+    out, reported_out, n_out = total("output", ("completion_tokens", "output_tokens"))
+    return {"calls": len(calls), "input_tokens": inp, "output_tokens": out,
+            "reported_input_tokens": reported_inp, "reported_output_tokens": reported_out,
+            "n_input_reported": n_inp, "n_output_reported": n_out,
+            "usage_complete": n_inp == n_out == len(calls), "alias_conflicts": conflicts}
 
 
 def run(condition, pilot_args, repeat=0):
@@ -319,6 +343,40 @@ def test():
             self.assertFalse(e["exposed"]); self.assertTrue(e["m0_any_use"])
             nc = {"instance": {"graph_seed": 33, "condition": "no_change"}, "explore": {"m0_episodes": [], "m1_episodes": []}}
             self.assertEqual(exposure(nc)["exposed"], "")
+        def test_usage_totals_missing_and_aliases(self):
+            with self.subTest(guard="missing_usage_is_unknown"):
+                totals = _usage_totals([{}])
+                self.assertIsNone(totals["input_tokens"])
+                self.assertIsNone(totals["output_tokens"])
+            with self.subTest(guard="token_aliases_count_once"):
+                totals = _usage_totals([{"prompt_tokens": 10, "input_tokens": 10,
+                                        "completion_tokens": 5, "output_tokens": 5}])
+                self.assertEqual((totals["input_tokens"], totals["output_tokens"]), (10, 5))
+            with self.subTest(guard="mixed_usage_fields"):
+                totals = _usage_totals([{"input_tokens": 9, "output_tokens": 4},
+                                        {"prompt_tokens": 7, "completion_tokens": 2}])
+                self.assertEqual((totals["input_tokens"], totals["output_tokens"]), (16, 6))
+            with self.subTest(guard="partial_usage_keeps_reported_counts"):
+                totals = _usage_totals([{"prompt_tokens": 10, "completion_tokens": 5}, {}])
+                self.assertIsNone(totals["input_tokens"])
+                self.assertEqual(totals["reported_input_tokens"], 10)
+                self.assertEqual(totals["n_input_reported"], 1)
+                self.assertFalse(totals["usage_complete"])
+            with self.subTest(guard="conflicting_aliases_are_unknown"):
+                totals = _usage_totals([{"prompt_tokens": 10, "input_tokens": 12,
+                                        "completion_tokens": 5}])
+                self.assertIsNone(totals["input_tokens"])
+                self.assertEqual(totals["alias_conflicts"], [{"call": 0, "field": "input"}])
+            with self.subTest(guard="zero_calls_are_explicit"):
+                totals = _usage_totals([])
+                self.assertEqual((totals["calls"], totals["input_tokens"], totals["output_tokens"]), (0, 0, 0))
+                self.assertTrue(totals["usage_complete"])
+            with self.subTest(guard="invalid_counts_are_unknown"):
+                for value in (True, -1, "10", 10.5):
+                    totals = _usage_totals([{"prompt_tokens": value, "completion_tokens": 5}])
+                    self.assertIsNone(totals["input_tokens"])
+                    self.assertEqual(totals["n_input_reported"], 0)
+                    self.assertFalse(totals["usage_complete"])
         def tearDown(self): activate("task_only")
     r = unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromTestCase(T))
     sys.exit(0 if r.wasSuccessful() else 1)
