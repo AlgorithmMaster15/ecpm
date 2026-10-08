@@ -1,4 +1,4 @@
-"""OFF-only model-first orchestration with explicit report policies. No retries or repair."""
+"""Shared passive orchestration. The original model-first entry remains OFF-only."""
 
 import copy
 import json
@@ -16,38 +16,31 @@ import run_pilot as pilot
 canonical = pilot._canonical_sha256
 
 
-def settings(profile, seed, supported, allowance):
+def settings(profile, seed, supported, allowance, reasoning_mode='off'):
     if type(allowance) is not int or allowance not in (4096, 8192):
         raise ValueError('locked stage allowance required')
-    result = controls.intended_settings(profile, 'off', seed, supported)
+    result = controls.intended_settings(profile, reasoning_mode, seed, supported,
+                                        allowed_seeds=(0, 1, 2, 3, 4, 999))
     result['max_completion_tokens' if profile == 'sol' else 'max_tokens'] = allowance
     return result
 
 
-def requests(world, arm, history_policy=design.HISTORY_POLICY):
+def requests(world, arm, history_policy=design.HISTORY_POLICY, design_api=design):
     """A coroutine: each send receives only the exact visible final answer."""
     design.check_history_policy(history_policy)
-    history = [{'role': 'system', 'content': design.SYSTEM}]
+    history = [{'role': 'system', 'content': design_api.system(world) if design_api is not design else design.SYSTEM}]
     for period in ('A', 'B'):
-        texts = design.prompts(world, period, arm)
-        msg = {'role': 'user', 'content': texts['prepare']}
-        answer = yield {'id': period + '_prepare', 'max_output_tokens': 4096,
-                        'history_policy': history_policy, 'conversation': 'main',
-                        'messages': copy.deepcopy(history + [msg])}
-        history += [msg, {'role': 'assistant', 'content': answer}]
-        msg = {'role': 'user', 'content': texts['task']}
-        answer = yield {'id': period + '_task',
-                        'history_policy': history_policy, 'conversation': 'main',
-                        'max_output_tokens': 4096,
-                        'messages': copy.deepcopy(history + [msg])}
-        history += [msg, {'role': 'assistant', 'content': answer}]
-        msg = {'role': 'user', 'content': texts['readout']}
-        answer = yield {'id': period + '_readout', 'max_output_tokens': 4096,
-                        'history_policy': history_policy,
-                        'conversation': design.conversation_kind('readout', history_policy),
-                        'messages': copy.deepcopy(history + [msg])}
-        if history_policy == design.HISTORY_POLICY:
-            history += [msg, {'role': 'assistant', 'content': answer}]
+        texts = design_api.prompts(world, period, arm)
+        stages = (design_api.stages(arm) if hasattr(design_api, 'stages') else
+                  getattr(design_api, 'STAGES', ('prepare', 'task', 'readout')))
+        for stage in stages:
+            msg = {'role': 'user', 'content': texts[stage]}
+            answer = yield {'id': period + '_' + stage, 'max_output_tokens': 4096,
+                            'history_policy': history_policy,
+                            'conversation': design.conversation_kind(stage, history_policy),
+                            'messages': copy.deepcopy(history + [msg])}
+            if stage != 'readout' or history_policy == design.HISTORY_POLICY:
+                history += [msg, {'role': 'assistant', 'content': answer}]
 
 
 def validate_config(wrapper, profile, history_policy=design.HISTORY_POLICY):
@@ -81,12 +74,12 @@ def context_check(body, config, allowance):
     return controls.context_bound(body['messages'], config, output_tokens=allowance, allow_system=True)
 
 
-def copied_fields(data, config, profile, dry=False):
+def copied_fields(data, config, profile, dry=False, reasoning_mode='off'):
     choice = data['choices'][0]
     message = choice['message']
     check = ({'mode_verified': False, 'evidence': 'unknown', 'reasoning_tokens': None,
               'control_violation': False, 'status': 'not_applied_synthetic'} if dry else
-             controls.reasoning_check(data, 'off', config['effective'], profile, config))
+             controls.reasoning_check(data, reasoning_mode, config['effective'], profile, config))
     return {'raw_response': message.get('content'), 'provider_finish_reason': choice.get('finish_reason'),
             'provider_usage': copy.deepcopy(data.get('usage', {})),
             'provider_reasoning': controls.provider_reasoning(data, profile),
@@ -94,14 +87,14 @@ def copied_fields(data, config, profile, dry=False):
             'truncated': choice.get('finish_reason') == 'length', 'control_check': check}
 
 
-def response_checks(turn, body, config, profile, allowance, dry=False):
+def response_checks(turn, body, config, profile, allowance, dry=False, reasoning_mode='off'):
     """Operational facts come from the original envelope, never copied scores."""
     checks = {'raw_envelope': False, 'copied_fields': False, 'transport': False,
               'controls': False, 'context': False}
     try:
         raw = turn['provider_response_raw']
         data = json.loads(raw)
-        copied = copied_fields(data, config, profile, dry)
+        copied = copied_fields(data, config, profile, dry, reasoning_mode)
         checks['raw_envelope'] = (design.digest(raw) == turn['provider_response_raw_sha256']
             and data == turn['provider_response'] and canonical(data) == turn['provider_response_sha256'])
         checks['copied_fields'] = all(k in turn and turn[k] == v for k, v in copied.items())
@@ -208,11 +201,13 @@ def identity(world, arm, repeat, profile, model, config_wrapper, provider, histo
                                for cap in (4096,)}}
 
 
-def run_once(world, arm, repeat, args, wrapper, outdir):
+def run_once(world, arm, repeat, args, wrapper, outdir, design_api=design):
     config = wrapper['deployment'] if wrapper else None
     policy = design.check_history_policy(args.history_policy)
-    ident = identity(world, arm, repeat, args.request_profile, args.model, wrapper, args.provider, policy)
-    run_id = f'{design.PROTOCOL}_seed{world["seed"]}_{arm}_r{repeat}_{canonical(ident)[:16]}'
+    ident = (identity(world, arm, repeat, args.request_profile, args.model, wrapper, args.provider, policy)
+             if design_api is design else design_api.identity(world, arm, repeat, args, wrapper))
+    mode = ident['reasoning_mode']
+    run_id = f'{design_api.PROTOCOL}_seed{world["seed"]}_{arm}_r{repeat}_{canonical(ident)[:16]}'
     path = Path(outdir) / (run_id + '.json')
     if path.exists():
         raise ValueError('run exists; no overwrite or resume')
@@ -220,9 +215,9 @@ def run_once(world, arm, repeat, args, wrapper, outdir):
                 'synthetic': config is None, 'deployment': wrapper, 'world': world,
                 'state': 'initialized', 'turns': {}, 'persistence_events': [], 'run_order': []}
     persist(path, artifact, 'initialized')
-    plan = requests(world, arm, policy)
+    plan = requests(world, arm, policy, design_api)
     call = next(plan)
-    dry_answers = synthetic_answers(world) if config is None else None
+    dry_answers = (synthetic_answers(world) if design_api is design else design_api.oracle_answers(world)) if config is None else None
     started = time.monotonic()
     try:
         while True:
@@ -256,30 +251,30 @@ def run_once(world, arm, repeat, args, wrapper, outdir):
             persist(path, artifact, name + ':provider_raw_saved')
             envelope = json.loads(raw)
             turn.update(provider_response=envelope, provider_response_sha256=canonical(envelope),
-                        **copied_fields(envelope, config, args.request_profile, config is None))
+                        **copied_fields(envelope, config, args.request_profile, config is None, mode))
             if isinstance(turn['raw_response'], str):
                 turn['response_sha256'] = design.digest(turn['raw_response'])
             if config and controls.local_context(config):
                 turn['prompt_usage_check'] = controls.prompt_usage_check(turn['context_check'], turn['provider_usage'])
             persist(path, artifact, name + ':raw_saved')
-            turn['operational_checks'] = response_checks(turn, body, config, args.request_profile, cap, config is None)
+            turn['operational_checks'] = response_checks(turn, body, config, args.request_profile, cap, config is None, mode)
             if not all(turn['operational_checks'].values()):
                 raise RuntimeError('returned answer failed operational checks')
             turn['cost'] = cost(turn['provider_usage'], config, args.request_profile)
             stage = name.split('_', 1)[1]
-            turn['parsed'] = (design.parse_task(turn['raw_response'], world, name[0]) if stage == 'task' else
-                              design.parse_readout(turn['raw_response'], world[name[0]]) if stage == 'readout' else
+            turn['parsed'] = (design_api.parse_task(turn['raw_response'], world, name[0]) if stage == 'task' else
+                              design_api.parse_readout(turn['raw_response'], world[name[0]]) if stage == 'readout' else
                               {'status': 'free_form', 'description_score': 'not_scored_by_design'})
             persist(path, artifact, name + ':parsed_saved')
             try:
                 call = plan.send(turn['raw_response'])
             except StopIteration:
                 break
-        artifact['scores'] = design.score_conversation(world, arm, artifact['turns'])
+        artifact['scores'] = design_api.score_conversation(world, arm, artifact['turns'])
         artifact['state'] = 'completed'
         artifact['elapsed_s'] = time.monotonic() - started
         persist(path, artifact, 'completed')
-        artifact['operational_audit'] = audit_artifact(artifact)
+        artifact['operational_audit'] = audit_artifact(artifact, design_api)
         if not all(artifact['operational_audit'].values()):
             raise RuntimeError('independent audit failed')
         persist(path, artifact)
@@ -300,7 +295,7 @@ def run_once(world, arm, repeat, args, wrapper, outdir):
     return artifact
 
 
-def audit_artifact(a):
+def audit_artifact(a, design_api=design):
     """Offline audit of raw envelopes, policy-specific history and controls."""
     checks = {'complete': False, 'identity': False, 'history': False,
               'hashes': False, 'persistence': False, 'responses': False, 'no_secrets': False}
@@ -308,9 +303,13 @@ def audit_artifact(a):
         i, world, turns = a['identity'], a['world'], a['turns']
         wrapper = a['deployment']
         policy = design.check_history_policy(i.get('history_policy'))
-        config = validate_config(wrapper, i['profile'], policy) if wrapper else None
+        config = ((validate_config(wrapper, i['profile'], policy) if design_api is design else
+                   design_api.validate_config(wrapper, i['profile'], i['reasoning_mode'], policy)) if wrapper else None)
         dry = i['provider'] == 'dry-run'
-        checks['identity'] = (i['protocol'] == design.PROTOCOL and i['scorer'] == design.SCORER
+        if design_api is not design:
+            checks['identity'] = design_api.audit_identity(a)
+        else:
+            checks['identity'] = (i['protocol'] == design.PROTOCOL and i['scorer'] == design.SCORER
             and i.get('history_policy') == policy
             and i.get('preparation_policy') == design.PREPARATION_POLICY
             and i['reasoning_mode'] == 'off' and i['condition'] in design.ARMS
@@ -321,16 +320,16 @@ def audit_artifact(a):
             and i['deployment_sha256'] == canonical(wrapper) and a['identity_sha256'] == canonical(i)
             and a['synthetic'] == dry == (wrapper is None)
             and (dry or (i['implementation_dirty'] is False and i['model'] == config['model'])))
-        expected_id = f'{design.PROTOCOL}_seed{world["seed"]}_{i["condition"]}_r{i["repeat"]}_{canonical(i)[:16]}'
+        expected_id = f'{design_api.PROTOCOL}_seed{world["seed"]}_{i["condition"]}_r{i["repeat"]}_{canonical(i)[:16]}'
         checks['identity'] &= a['run_id'] == expected_id
-        plan = design.schedule(world, i['condition'], {k: t['raw_response'] for k, t in turns.items()}, policy)
+        plan = design_api.schedule(world, i['condition'], {k: t['raw_response'] for k, t in turns.items()}, policy)
         checks['complete'] = (a['state'] == 'completed' and not a.get('failure')
                               and set(turns) == {c['id'] for c in plan} and a['run_order'] == [c['id'] for c in plan])
         checks.update(history=True, hashes=True, persistence=True, responses=True)
         for c in plan:
             name, cap = c['id'], c['max_output_tokens']
             t = turns[name]
-            request_settings = settings(i['profile'], i['repeat_seed_label'], bool(config and config['seed_supported']), cap)
+            request_settings = settings(i['profile'], i['repeat_seed_label'], bool(config and config['seed_supported']), cap, i['reasoning_mode'])
             body = {'model': i['model'], 'messages': c['messages'], **request_settings}
             parent = c['messages'][:-1]
             checks['identity'] &= i['stage_settings'][str(cap)] == request_settings
@@ -346,7 +345,7 @@ def audit_artifact(a):
             checks['persistence'] &= all(events.count(e) == 1 for e in required)
             checks['persistence'] &= [events.index(e) for e in required] == sorted(events.index(e) for e in required)
             checks['persistence'] &= events.index(required[-1]) < events.index('completed')
-            checks['responses'] &= all(response_checks(t, body, config, i['profile'], cap, dry).values())
+            checks['responses'] &= all(response_checks(t, body, config, i['profile'], cap, dry, i['reasoning_mode']).values())
         controls.no_secrets(a)
         checks['no_secrets'] = True
     except (ValueError, KeyError, TypeError, IndexError, AttributeError):
@@ -354,13 +353,13 @@ def audit_artifact(a):
     return checks
 
 
-def write_summary(outdir, expected=3):
+def write_summary(outdir, expected=3, design_api=design):
     files = sorted(p for p in Path(outdir).glob('*.json') if p.name != 'summary.json')
     records = [json.loads(p.read_text()) for p in files]
-    rows = [{'file': p.name, 'run_id': a['run_id'], 'state': a['state'], 'audit': audit_artifact(a)}
+    rows = [{'file': p.name, 'run_id': a['run_id'], 'state': a['state'], 'audit': audit_artifact(a, design_api)}
             for p, a in zip(files, records)]
     policies = sorted({a['identity']['history_policy'] for a in records})
-    summary = {'protocol': design.PROTOCOL, 'preparation_policy': design.PREPARATION_POLICY, 'history_policies': policies,
+    summary = {'protocol': design_api.PROTOCOL, 'preparation_policy': design_api.PREPARATION_POLICY, 'history_policies': policies,
                'history_policy': policies[0] if len(policies) == 1 else None,
                'expected_conversations': expected,
                'completed_conversations': sum(a['state'] == 'completed' for a in records),
@@ -388,11 +387,13 @@ def write_summary(outdir, expected=3):
     return summary
 
 
-def block_cost_plan(world, arm, wrapper, repeats=3, history_policy=design.HISTORY_POLICY):
+def block_cost_plan(world, arm, wrapper, repeats=3, history_policy=design.HISTORY_POLICY, design_api=design):
     """Conservative ceiling from the admitted context, not a token-use forecast."""
-    if type(repeats) is not int or repeats not in (1, 3):
-        raise ValueError('one or three repeats required')
-    calls = design.schedule(world, arm, synthetic_answers(world), history_policy)
+    supported_repeats = (1, 3) if design_api is design else (1, 5)
+    if type(repeats) is not int or repeats not in supported_repeats:
+        raise ValueError('one or three repeats required' if design_api is design else 'one or five repeats required')
+    answers = synthetic_answers(world) if design_api is design else design_api.oracle_answers(world)
+    calls = design_api.schedule(world, arm, answers, history_policy)
     completion = repeats * sum(c['max_output_tokens'] for c in calls)
     if wrapper is None:
         return {'status': 'unavailable', 'reason': 'no verified deployment/rates',

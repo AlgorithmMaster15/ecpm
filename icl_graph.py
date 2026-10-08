@@ -253,8 +253,8 @@ def reference_answer(view, earlier=None):
     return json.dumps(answer, separators=(",", ":")), estimates
 
 
-def intended_settings(profile, mode, seed, seed_supported=False):
-    if profile not in MODELS or mode not in ("off", "on") or seed not in (0, 1, 2, 999):
+def intended_settings(profile, mode, seed, seed_supported=False, allowed_seeds=(0, 1, 2, 999)):
+    if profile not in MODELS or mode not in ("off", "on") or type(seed) is not int or seed not in allowed_seeds:
         raise ValueError("unknown request profile, reasoning mode or seed")
     if profile == "sol":
         if seed_supported:
@@ -527,7 +527,10 @@ def reasoning_check(data, mode, effective, profile=None, config=None):
     # Empty template delimiters are not substantive thought text.
     substantive = re.sub(r"^\s*<\|channel>thought\s*<channel\|>\s*$", "", text)
     substantive = re.sub(r"</?think>|\[/?THINK\]", "", substantive).strip()
-    tokens = data.get("usage", {}).get("completion_tokens_details", {}).get("reasoning_tokens")
+    details = data.get("usage", {}).get("completion_tokens_details")
+    if details is not None and not isinstance(details, dict):
+        raise ValueError("invalid completion token details")
+    tokens = (details or {}).get("reasoning_tokens")
     count_known = type(tokens) is int and tokens >= 0
     positive = bool(substantive) or (count_known and tokens > 0)
     if profile in HOSTED_PROFILES:

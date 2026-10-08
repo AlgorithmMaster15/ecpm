@@ -107,7 +107,7 @@ ALL_PROBES = ("detection", "localization", "preservation", "adaptation")
 # turn 2 reveals period B (turn 1 stays in context) and asks ALL_PROBES.
 TURN1_PROBES = ("route_pre", "belief_pre")
 REELICIT_PROBE = "belief_post"
-PROTOCOLS = ("legacy", "icl_two_response_v1", "icl_graph_availability_v1", "icl_model_first_v1")
+PROTOCOLS = ("legacy", "icl_two_response_v1", "icl_graph_availability_v1", "icl_model_first_v1", "icl_expanded_v2")
 ICL_LEVELS = ("empirical_table", "explained_logs", "minimal_logs")
 COST_STATUSES = ("exact", "estimated", "unavailable", "local_unpriced")
 
@@ -190,7 +190,8 @@ def resolve_scenario(args):
     if sc["rendering"] not in PROMPT_RENDERINGS:
         raise SystemExit(f"unknown rendering {sc['rendering']!r}; "
                          f"known: {', '.join(PROMPT_RENDERINGS)}")
-    if sc["condition"] == "no_change" and "localization" in sc["probes"]:
+    if (sc["condition"] == "no_change" and "localization" in sc["probes"]
+            and getattr(args, "protocol", None) != "icl_expanded_v2"):
         raise SystemExit("localization asserts a change occurred; drop it "
                          "for condition=no_change (--probes detection "
                          "preservation adaptation)")
@@ -1789,9 +1790,17 @@ def run_pilot_active(sc, deterministic, args):
         max_context_tokens_est=args.explore_context_budget,
         seed=sc["seed"])
 
+    from model_clients import usage_totals as normalized_usage_totals
     last_usage = {}
-    usage_totals = {"n_calls": 0, "prompt_tokens": 0,
-                    "completion_tokens": 0, "total_tokens": 0}
+    usage_calls = []
+
+    def accumulated_usage():
+        totals = normalized_usage_totals(usage_calls)
+        inp, out = totals['input_tokens'], totals['output_tokens']
+        return {**totals, 'n_calls': totals['calls'], 'prompt_tokens': inp,
+                'completion_tokens': out,
+                'total_tokens': inp + out if inp is not None and out is not None else None,
+                'accounting_scope': 'successful_returned_calls_only'}
 
     def act_fn(system, messages):
         nonlocal last_usage  # so the caller can read usage after the call, since only (text, reasoning) is returned
@@ -1812,13 +1821,9 @@ def run_pilot_active(sc, deterministic, args):
         else:
             raise AssertionError("dry-run must not call act_fn")
         last_usage = usage
-        usage_totals["n_calls"] += 1
-        usage_totals["prompt_tokens"] += usage.get("prompt_tokens", 0)
-        usage_totals["completion_tokens"] += usage.get("completion_tokens", 0)
-        usage_totals["total_tokens"] += usage.get("total_tokens", 0)
+        usage_calls.append(usage)
+        usage_totals = accumulated_usage()
         print(f"[tokens] call {usage_totals['n_calls']}: "
-             f"prompt={usage.get('prompt_tokens', 0)} "
-             f"completion={usage.get('completion_tokens', 0)} | "
              f"cumulative: prompt={usage_totals['prompt_tokens']} "
              f"completion={usage_totals['completion_tokens']} "
              f"total={usage_totals['total_tokens']}")
@@ -1894,7 +1899,8 @@ def run_pilot_active(sc, deterministic, args):
             "parsed": probe_result["parsed"],
             "scored": probe_result["scored"],
         }
-    artifact["token_usage_total"] = usage_totals
+    artifact["provider_usage_calls"] = usage_calls
+    artifact["token_usage_total"] = accumulated_usage()
     return artifact
 
 
@@ -1910,13 +1916,13 @@ def main():
                          "icl_two_response_v1 runs the additive 3-level "
                          "two-response protocol")
     ap.add_argument("--graph-condition", choices=["graph_ab", "graph_a", "logs_only"])
-    ap.add_argument("--model-first-condition", choices=["model_first", "task_only", "graph_given"],
-                    help="icl_model_first_v1 only: one locked workflow per block")
+    ap.add_argument("--model-first-condition", choices=["model_first", "task_only", "spontaneous", "graph_given", "baseline_task"],
+                    help="model-first/expanded protocols: one workflow per block")
     ap.add_argument("--history-policy", choices=["retained_reports_v2", "separate_reports_post_task_v1"],
-                    default="retained_reports_v2", help="icl_model_first_v1 only: retain reports or collect post-task copies")
+                    default=None, help="model-first/expanded: retain reports (default) or collect post-task copies")
     ap.add_argument("--request-profile", choices=["gemma_e4b", "gemma_31b", "sol", "gemma_31b_together"])
     ap.add_argument("--deployment-config",
-                    help="graph protocol only: reviewed non-secret endpoint/readiness JSON")
+                    help="reviewed non-secret endpoint/readiness JSON for the selected protocol")
     ap.add_argument("--off-reference",
                     help="graph protocol only: completed matched OFF directory for conditional ON")
     # what is asked
@@ -2021,6 +2027,14 @@ def main():
                          "--max-tokens greater than this value)")
     args = ap.parse_args()
 
+    if args.pilot_type == 'active':
+        if args.history_policy is not None:
+            ap.error('active A-report history policies are not implemented; no run started')
+        if args.reasoning_mode != 'unspecified':
+            ap.error('active --reasoning-mode has no verified OFF/ON control; no run started')
+    if args.history_policy is None:
+        args.history_policy = 'retained_reports_v2'
+
     if args.list_scenarios:
         for name in sorted(SCENARIOS):
             sc = dict(SCENARIO_DEFAULTS)
@@ -2035,6 +2049,10 @@ def main():
     if args.tag is None:
         args.tag = sc["name"]
     outdir = os.path.join(args.out, args.tag)
+    if args.protocol == "icl_expanded_v2":
+        import icl_expanded
+        icl_expanded.run_suite(sc, args, outdir)
+        return
     if args.protocol == "icl_model_first_v1":
         import icl_model_first_runner
         icl_model_first_runner.run_suite(sc, args, outdir)

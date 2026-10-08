@@ -152,7 +152,7 @@ def generate(out, history_policy=design.HISTORY_POLICY):
     return report
 
 
-def compatible_identity(artifact):
+def compatible_identity(artifact, max_repeat=3):
     """Conservative grouping: no deployment/provenance differences are pooled.
 
     Only the repeat number and its expected sampling seed vary within a group.
@@ -162,8 +162,8 @@ def compatible_identity(artifact):
     identity = dict(artifact['identity'])
     repeat = identity.pop('repeat')
     seed = identity.pop('repeat_seed_label')
-    if type(repeat) is not int or repeat not in (1, 2, 3) or type(seed) is not int or seed != repeat - 1:
-        raise ValueError('invalid repeat identity; allowed repeat labels are 0/1/2')
+    if type(repeat) is not int or repeat not in range(1, max_repeat + 1) or type(seed) is not int or seed != repeat - 1:
+        raise ValueError('invalid repeat identity; allowed repeat labels are sequential from zero')
     stage_settings = {cap: dict(values) for cap, values in identity['stage_settings'].items()}
     for values in stage_settings.values():
         if 'seed' in values:

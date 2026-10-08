@@ -26,6 +26,31 @@ class TransientLLMError(Exception):
     """
 
 
+def usage_totals(calls):
+    """Count alternate provider names once; unknown usage is not measured zero."""
+    conflicts = []
+    def total(field, names):
+        values = []
+        for i, usage in enumerate(calls):
+            if not isinstance(usage, dict):
+                continue
+            candidates = [usage[k] for k in names if usage.get(k) is not None]
+            if not candidates or any(type(v) is not int or v < 0 for v in candidates):
+                continue
+            if len(set(candidates)) != 1:
+                conflicts.append({"call": i, "field": field})
+                continue
+            values.append(candidates[0])
+        subtotal = sum(values) if values or not calls else None
+        return subtotal if len(values) == len(calls) else None, subtotal, len(values)
+    inp, reported_inp, n_inp = total("input", ("prompt_tokens", "input_tokens"))
+    out, reported_out, n_out = total("output", ("completion_tokens", "output_tokens"))
+    return {"calls": len(calls), "input_tokens": inp, "output_tokens": out,
+            "reported_input_tokens": reported_inp, "reported_output_tokens": reported_out,
+            "n_input_reported": n_inp, "n_output_reported": n_out,
+            "usage_complete": n_inp == n_out == len(calls), "alias_conflicts": conflicts}
+
+
 
 def _content_or_retry(data):
     """Pull the assistant text out of an OpenAI-shaped response.
