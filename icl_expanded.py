@@ -20,7 +20,7 @@ import run_pilot as pilot
 import icl_preparation as preparation
 
 PROTOCOL = 'icl_expanded_v2'
-SCORER = 'icl_expanded_rows_v2'
+SCORER = 'icl_expanded_rows_v3'
 PREPARATION_POLICY = 'five_arms_length_target_v2'
 SCHEDULE = 'prepare_task_post_task_report_v2'
 STAGES = ('prepare', 'task', 'readout')
@@ -380,6 +380,10 @@ def score_conversation(world, arm, turns):
 
 def updating(periods, world):
     """Task routes, not readout labels. Eligibility always comes from own A."""
+    def route_value(parsed):
+        value = parsed['value']
+        return (value['reachable'], tuple((s['state'], s['action']) for s in value['steps']))
+
     records = {}
     changes = {tuple(p) for p in world['true_changes']}
     for q in queries(world):
@@ -394,7 +398,8 @@ def updating(periods, world):
         replay_optimal = replay['optimal'] or replay['status'] == 'correct_no_route'
         necessary = bool(used and not replay_optimal)
         stable = bool(valid_a and old['optimal'] and replay_optimal)
-        different = bool(a['valid'] and b['valid'] and a['value'] != b['value'])
+        # Extra JSON fields remain format errors, but do not change the route.
+        different = bool(a['valid'] and b['valid'] and route_value(a) != route_value(b))
         successful_b = current['optimal'] or current['status'] == 'correct_no_route'
         records[key] = dict(A_route_valid=valid_a, A_route_used_changed_pair=bool(used),
             A_route_still_optimal_in_B=bool(valid_a and replay_optimal),

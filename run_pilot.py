@@ -1790,9 +1790,17 @@ def run_pilot_active(sc, deterministic, args):
         max_context_tokens_est=args.explore_context_budget,
         seed=sc["seed"])
 
+    from model_clients import usage_totals as normalized_usage_totals
     last_usage = {}
-    usage_totals = {"n_calls": 0, "prompt_tokens": 0,
-                    "completion_tokens": 0, "total_tokens": 0}
+    usage_calls = []
+
+    def accumulated_usage():
+        totals = normalized_usage_totals(usage_calls)
+        inp, out = totals['input_tokens'], totals['output_tokens']
+        return {**totals, 'n_calls': totals['calls'], 'prompt_tokens': inp,
+                'completion_tokens': out,
+                'total_tokens': inp + out if inp is not None and out is not None else None,
+                'accounting_scope': 'successful_returned_calls_only'}
 
     def act_fn(system, messages):
         nonlocal last_usage  # so the caller can read usage after the call, since only (text, reasoning) is returned
@@ -1813,13 +1821,9 @@ def run_pilot_active(sc, deterministic, args):
         else:
             raise AssertionError("dry-run must not call act_fn")
         last_usage = usage
-        usage_totals["n_calls"] += 1
-        usage_totals["prompt_tokens"] += usage.get("prompt_tokens", 0)
-        usage_totals["completion_tokens"] += usage.get("completion_tokens", 0)
-        usage_totals["total_tokens"] += usage.get("total_tokens", 0)
+        usage_calls.append(usage)
+        usage_totals = accumulated_usage()
         print(f"[tokens] call {usage_totals['n_calls']}: "
-             f"prompt={usage.get('prompt_tokens', 0)} "
-             f"completion={usage.get('completion_tokens', 0)} | "
              f"cumulative: prompt={usage_totals['prompt_tokens']} "
              f"completion={usage_totals['completion_tokens']} "
              f"total={usage_totals['total_tokens']}")
@@ -1895,7 +1899,8 @@ def run_pilot_active(sc, deterministic, args):
             "parsed": probe_result["parsed"],
             "scored": probe_result["scored"],
         }
-    artifact["token_usage_total"] = usage_totals
+    artifact["provider_usage_calls"] = usage_calls
+    artifact["token_usage_total"] = accumulated_usage()
     return artifact
 
 

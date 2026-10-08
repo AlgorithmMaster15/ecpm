@@ -252,6 +252,8 @@ def compute_explore_metrics(inst, m0_episodes, m1_episodes) -> dict:
                      "changed_action_available": None}
     changed_usage = {"version": "action_label_phase_usage_v1",
                      "node": None, "action_label": None,
+                     "m0_route_uses": None,
+                     "exposure_definition": "last_m0_episode_use_v1",
                      "m0": None, "m1": None, "after_feedback": None,
                      "feedback_event": {"status": "not_applicable"}}
     edge = inst.change.get("edge")
@@ -261,6 +263,11 @@ def compute_explore_metrics(inst, m0_episodes, m1_episodes) -> dict:
         changed_usage.update(node=u, action_label=label,
                              m0=usage(m0_steps, u, label),
                              m1=usage(m1_steps, u, label))
+        if m0_episodes:
+            changed_usage['m0_route_uses'] = any(
+                s.node == u and s.action_label == label
+                and s.parse_status != 'retries_exhausted'
+                for s in m0_episodes[-1].steps)
         # This is an observed failure, not evidence of recognized change.
         first_fail = next((i for i, s in enumerate(m1_steps)
                            if s.node == u and s.action_label == label

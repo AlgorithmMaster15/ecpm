@@ -138,6 +138,15 @@ def metric_rows(a, status):
         for q, r in p['routes'].items():
             for name in ('valid', 'optimal', 'solution_correct', 'reachability_correct'):
                 emit('route_' + name, int(r[name]), 1, period, q)
+            # Keep legacy fields, while giving all-query correctness and
+            # reachable-only optimality explicit, non-overlapping meanings.
+            reachable = r['oracle_reachable']
+            emit('route_oracle_reachable', int(reachable), 1, period, q)
+            emit('route_optimal_solution', int(r['optimal'] or r['status'] == 'correct_no_route'), 1, period, q)
+            emit('route_optimal_reachable', int(r['optimal']) if reachable else None,
+                 int(reachable), period, q)
+            emit('route_correct_no_route', int(r['status'] == 'correct_no_route') if not reachable else None,
+                 int(not reachable), period, q)
             for name in ('cost', 'regret'):
                 emit('route_' + name + '_conditional', r[name], int(r[name] is not None), period, q)
             for name in ('own_report_optimal', 'own_report_no_route_correct'):

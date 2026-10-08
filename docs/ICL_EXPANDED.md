@@ -72,9 +72,22 @@ routes therefore determine updating eligibility.
 
 ## Scores
 
+The final audit uses scorer `icl_expanded_rows_v3`. Replanning compares
+reachability and state/action steps, so an extra JSON annotation cannot create
+a route change. Extra fields still fail the separate format check. Older
+scorer identities remain separate; do not rewrite their saved scores.
+
 Routes use the true current system: validity, optimality, cost and regret, plus
 correct no-route answers. Invalid routes have null cost/regret. Detection and
 Localization use actual changes; no-change localization is null.
+`route_solution_correct` means a feasible goal-reaching route or a correct
+no-route answer. It does not require shortest cost. Use `route_optimal` for
+the legacy per-query flag. For tables, `route_optimal_solution` combines
+optimal routes with correct no-route answers over all queries;
+`route_optimal_reachable` includes only truly reachable queries; and
+`route_correct_no_route` includes only truly unreachable queries. The CSV also
+exports `route_oracle_reachable`. Malformed answers remain failures within the
+appropriate denominator. These columns consume saved route scores.
 
 Structured reports retain row-level availability, destination, probability,
 full-graph exactness and probability MAE. Stochastic probability tolerance is
@@ -164,6 +177,8 @@ billing separately. The ceiling excludes deployment preflight calls.
 
 This extension is passive ICL only. Larger graphs and agentic integration are
 separate follow-ups.
+See [final run readiness](FINAL_RUN_READINESS.md) for the boundary between this
+ICL lock and the existing agentic workflow.
 
 Implementation: [adapter](../icl_expanded.py), [preparation extraction](../icl_preparation.py),
 [runner](../icl_model_first_runner.py), [reporting](../experiments/preview_icl_expanded.py)

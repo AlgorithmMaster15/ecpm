@@ -527,7 +527,10 @@ def reasoning_check(data, mode, effective, profile=None, config=None):
     # Empty template delimiters are not substantive thought text.
     substantive = re.sub(r"^\s*<\|channel>thought\s*<channel\|>\s*$", "", text)
     substantive = re.sub(r"</?think>|\[/?THINK\]", "", substantive).strip()
-    tokens = data.get("usage", {}).get("completion_tokens_details", {}).get("reasoning_tokens")
+    details = data.get("usage", {}).get("completion_tokens_details")
+    if details is not None and not isinstance(details, dict):
+        raise ValueError("invalid completion token details")
+    tokens = (details or {}).get("reasoning_tokens")
     count_known = type(tokens) is int and tokens >= 0
     positive = bool(substantive) or (count_known and tokens > 0)
     if profile in HOSTED_PROFILES:

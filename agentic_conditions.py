@@ -40,6 +40,7 @@ billing reconciliation, including any unreported or failed attempts.
 """
 import json, os, re, statistics as st, sys
 import explore_agent as A
+from model_clients import usage_totals as _usage_totals
 from resource_mdp import make_pair
 
 CONDITIONS = ("task_only", "model_first", "graph_given")
@@ -90,16 +91,15 @@ def system_prompt(args, condition):
         hit = [s for s in LEARN_SENTENCES if s in text]
         assert hit, "explore_agent prompt changed; add its learn-by-trying sentence to LEARN_SENTENCES"
         text = text.replace(hit[0], GRAPH_SENTENCE)
-    _STATE["system_prompt"] = text
     if _STATE["mode_prompts"]:
         hit = [s for s in LEARN_SENTENCES if s in text]
         assert hit or condition == "graph_given", "explore_agent prompt changed; add its learn-by-trying sentence to LEARN_SENTENCES"
         anchor = (GRAPH_SENTENCE if condition == "graph_given" else hit[0]) if hit or condition == "graph_given" else None
         text = text.replace(anchor, anchor + MODE_SENTENCES[_STATE["deterministic"]])
-        _STATE["system_prompt"] = text
     if condition == "model_first":
         text += (" Between episodes you will also be asked to describe your "
                  "current model of the network; that reply needs no JSON object.")
+    _STATE["system_prompt"] = text
     return text
 
 
@@ -160,6 +160,14 @@ def exposure(artifact):
     cond = ins["condition"]
     if cond == "no_change":
         return {"changed_link": "", "m0_route_uses": "", "m0_any_use": "", "m1_attempts": "", "exposed": ""}
+    usage = artifact['explore'].get('metrics', {}).get('changed_action_usage', {})
+    if 'm0_route_uses' in usage:
+        return {'changed_link': f"{usage['node']}:{usage['action_label']}",
+                'm0_route_uses': usage['m0_route_uses'],
+                'm0_any_use': usage['m0']['n_choices'] > 0,
+                'm1_attempts': usage['m1']['n_choices'],
+                'exposed': usage['m0_route_uses']}
+    # Compatibility fallback for old artifacts; their saved scores are unchanged.
     inst = make_pair(ins["graph_seed"], cond, matched=ins.get("matched", True), deterministic=ins.get("deterministic", False))
     u, v = inst.change["edge"]
     label = inst.labels[(u, v)]
@@ -204,31 +212,6 @@ def exposure_csv(runs_dir):
 
 
 # ---------------------------------------------------------------- run / batch
-def _usage_totals(calls):
-    """Count alternate provider names once; unknown usage is not measured zero."""
-    conflicts = []
-    def total(field, names):
-        values = []
-        for i, usage in enumerate(calls):
-            if not isinstance(usage, dict):
-                continue
-            candidates = [usage[k] for k in names if usage.get(k) is not None]
-            if not candidates or any(type(v) is not int or v < 0 for v in candidates):
-                continue
-            if len(set(candidates)) != 1:
-                conflicts.append({"call": i, "field": field})
-                continue
-            values.append(candidates[0])
-        subtotal = sum(values) if values or not calls else None
-        return subtotal if len(values) == len(calls) else None, subtotal, len(values)
-    inp, reported_inp, n_inp = total("input", ("prompt_tokens", "input_tokens"))
-    out, reported_out, n_out = total("output", ("completion_tokens", "output_tokens"))
-    return {"calls": len(calls), "input_tokens": inp, "output_tokens": out,
-            "reported_input_tokens": reported_inp, "reported_output_tokens": reported_out,
-            "n_input_reported": n_inp, "n_output_reported": n_out,
-            "usage_complete": n_inp == n_out == len(calls), "alias_conflicts": conflicts}
-
-
 def run(condition, pilot_args, repeat=0, mode_prompts=False):
     activate(condition, mode_prompts)
     import run_pilot
