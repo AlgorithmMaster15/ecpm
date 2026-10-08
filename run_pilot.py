@@ -1919,7 +1919,7 @@ def main():
     ap.add_argument("--model-first-condition", choices=["model_first", "task_only", "spontaneous", "graph_given", "baseline_task"],
                     help="model-first/expanded protocols: one workflow per block")
     ap.add_argument("--history-policy", choices=["retained_reports_v2", "separate_reports_post_task_v1"],
-                    default="retained_reports_v2", help="model-first/expanded: retain reports or collect post-task copies")
+                    default=None, help="model-first/expanded: retain reports (default) or collect post-task copies")
     ap.add_argument("--request-profile", choices=["gemma_e4b", "gemma_31b", "sol", "gemma_31b_together"])
     ap.add_argument("--deployment-config",
                     help="reviewed non-secret endpoint/readiness JSON for the selected protocol")
@@ -2026,6 +2026,14 @@ def main():
                          "Thinking with this token budget (requires "
                          "--max-tokens greater than this value)")
     args = ap.parse_args()
+
+    if args.pilot_type == 'active':
+        if args.history_policy is not None:
+            ap.error('active A-report history policies are not implemented; no run started')
+        if args.reasoning_mode != 'unspecified':
+            ap.error('active --reasoning-mode has no verified OFF/ON control; no run started')
+    if args.history_policy is None:
+        args.history_policy = 'retained_reports_v2'
 
     if args.list_scenarios:
         for name in sorted(SCENARIOS):

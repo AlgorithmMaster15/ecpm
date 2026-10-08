@@ -33,7 +33,9 @@ matched neutral turns. The five-arm ICL change does not expand it automatically.
 The current active runner explores M0 then M1 and asks probes after both phases.
 It does not collect an A transition report before M1. Consequently, the existing
 `--history-policy` option does not implement an agentic retained/separate
-comparison. Do not label these runs as either new history condition.
+comparison. Explicit active history-policy and OFF/ON flags now fail before a
+run starts, rather than being silently ignored. Do not label these runs as
+either new history condition or verified OFF/ON.
 
 `changed_action_usage.m0_route_uses` records whether the last M0 episode used
 the changed action. It is null with no M0 episode or no changed pair. The exposure

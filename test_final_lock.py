@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import tempfile
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -122,6 +123,17 @@ class FinalLock(unittest.TestCase):
                 self.assertIsNone(values['route_optimal_reachable']['value'])
                 self.assertEqual(values['route_correct_no_route']['value'], 1)
         self.assertGreater(unreachable, 0)
+
+    def test_legacy_active_rejects_unimplemented_history_and_reasoning_flags(self):
+        for flag in ('--history-policy=retained_reports_v2',
+                     '--history-policy=separate_reports_post_task_v1',
+                     '--reasoning-mode=off', '--reasoning-mode=on'):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as folder, \
+                 patch.object(sys, 'argv', ['run_pilot.py', '--pilot-type', 'active',
+                                           '--mode', 'det', '--out', folder, flag]), \
+                 patch.object(run_pilot, 'run_pilot_active', side_effect=AssertionError('must reject before run')), \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(SystemExit, '2'):
+                run_pilot.main()
 
 
 if __name__ == '__main__':
