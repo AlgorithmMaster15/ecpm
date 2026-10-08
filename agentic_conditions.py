@@ -11,7 +11,7 @@ task_only applies no wrapping at all, so it is the existing arm unchanged.
 
 Commands (repository root):
   python3 -B agentic_conditions.py test
-  python3 -B agentic_conditions.py run CONDITION [--repeat R] -- <run_pilot.py arguments>
+  python3 -B agentic_conditions.py run CONDITION [--repeat R] [--mode-prompts] -- <run_pilot.py arguments>
   python3 -B agentic_conditions.py batch OUTDIR [CONDITION ...] -- <provider arguments>
   python3 -B agentic_conditions.py estimate [--seeds 51]
   python3 -B agentic_conditions.py exposure RUNS_DIR      # writes RUNS_DIR/exposure.csv
@@ -56,18 +56,44 @@ SEEDS_51 = [33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 45, 46, 48, 49, 51, 52, 
             83, 84, 85, 86, 87, 88, 89, 90, 91]
 
 _ORIG = {"prompt": A.build_system_prompt, "policy": A._build_recording_policy, "run": A.run_explore_instance}
-_STATE = {"condition": "task_only", "episodes": 0, "mdp": None, "descriptions": []}
+_STATE = {"condition": "task_only", "episodes": 0, "mdp": None, "descriptions": [],
+          "mode_prompts": False, "deterministic": False}
 
 
-def system_prompt(goal, condition):
-    text = _ORIG["prompt"](goal)
+# Sentences in explore_agent's system prompt that say the network must be learned by trying.
+# The first is the prompt on main, the second the reworded prompt on the editPrompts branch.
+LEARN_SENTENCES = (
+    "You do not know the network's structure or reliabilities in advance: "
+    "you must learn them by trying actions and observing what happens. ",
+    "You can learn where any action leads or how reliable the link is only by trying "
+    "actions and watching the outcomes. ")
+# Mode-specific system-prompt sentence (opt-in with --mode-prompts). Proposed wording;
+# the team agreed deterministic and stochastic runs need different prompts.
+MODE_SENTENCES = {
+    True: ("In this network every link behaves the same way each time: an attempt on a "
+           "given link either always succeeds or always fails. "),
+    False: ("In this network an attempt on a link succeeds with some fixed probability, "
+            "so the same link can succeed one time and fail the next. "),
+}
+GRAPH_SENTENCE = ("At the start of each phase you receive the network's current "
+                  "specification: every location's actions with their "
+                  "destinations and success probabilities. ")
+
+
+def system_prompt(args, condition):
+    """args: whatever explore_agent.build_system_prompt takes (goal, or goal, start, horizon)."""
+    text = _ORIG["prompt"](*args)
     if condition == "graph_given":
-        old = ("You do not know the network's structure or reliabilities in advance: "
-               "you must learn them by trying actions and observing what happens. ")
-        assert old in text, "explore_agent prompt changed; update agentic_conditions.py"
-        text = text.replace(old, "At the start of each phase you receive the network's current "
-                                 "specification: every location's actions with their "
-                                 "destinations and success probabilities. ")
+        hit = [s for s in LEARN_SENTENCES if s in text]
+        assert hit, "explore_agent prompt changed; add its learn-by-trying sentence to LEARN_SENTENCES"
+        text = text.replace(hit[0], GRAPH_SENTENCE)
+    _STATE["system_prompt"] = text
+    if _STATE["mode_prompts"]:
+        hit = [s for s in LEARN_SENTENCES if s in text]
+        assert hit or condition == "graph_given", "explore_agent prompt changed; add its learn-by-trying sentence to LEARN_SENTENCES"
+        anchor = (GRAPH_SENTENCE if condition == "graph_given" else hit[0]) if hit or condition == "graph_given" else None
+        text = text.replace(anchor, anchor + MODE_SENTENCES[_STATE["deterministic"]])
+        _STATE["system_prompt"] = text
     if condition == "model_first":
         text += (" Between episodes you will also be asked to describe your "
                  "current model of the network; that reply needs no JSON object.")
@@ -105,22 +131,22 @@ def _policy(mdp, labels, cfg, messages, step_meta, **kw):
 
 
 def _run(inst, cfg, act_fn=None, node_policy_fn=None):
-    _STATE.update(episodes=0, mdp=None, descriptions=[])
+    _STATE.update(episodes=0, mdp=None, descriptions=[], deterministic=bool(getattr(inst, "deterministic", False)))
     res = _ORIG["run"](inst, cfg, act_fn=act_fn, node_policy_fn=node_policy_fn)
     res["descriptions"], res["condition"] = list(_STATE["descriptions"]), _STATE["condition"]
     return res
 
 
-def activate(condition):
-    """Switch explore_agent to `condition`. task_only restores the original functions."""
+def activate(condition, mode_prompts=False):
+    """Switch explore_agent to `condition`. task_only without mode prompts restores the originals."""
     if condition not in CONDITIONS:
         raise ValueError(f"unknown condition {condition!r}; expected one of {CONDITIONS}")
-    _STATE["condition"] = condition
-    if condition == "task_only":
+    _STATE["condition"], _STATE["mode_prompts"] = condition, mode_prompts
+    if condition == "task_only" and not mode_prompts:
         A.build_system_prompt, A._build_recording_policy, A.run_explore_instance = \
             _ORIG["prompt"], _ORIG["policy"], _ORIG["run"]
     else:
-        A.build_system_prompt = lambda goal: system_prompt(goal, condition)
+        A.build_system_prompt = lambda *args: system_prompt(args, condition)
         A._build_recording_policy, A.run_explore_instance = _policy, _run
 
 
@@ -179,8 +205,8 @@ def _usage_totals(calls):
             "output_tokens": sum(get(u, "completion_tokens", "output_tokens") for u in calls)}
 
 
-def run(condition, pilot_args, repeat=0):
-    activate(condition)
+def run(condition, pilot_args, repeat=0, mode_prompts=False):
+    activate(condition, mode_prompts)
     import run_pilot
     calls = []
     orig_retry = run_pilot.with_retry
@@ -205,7 +231,9 @@ def run(condition, pilot_args, repeat=0):
     tag = pilot_args[pilot_args.index("--tag") + 1] if "--tag" in pilot_args else None
     if tag:   # sidecar: the condition and exposure are not in run_pilot's artifact schema
         d = os.path.join(out, tag); os.makedirs(d, exist_ok=True)
-        meta = {"condition": condition, "repeat": repeat, "usage_totals": _usage_totals(calls)}
+        meta = {"condition": condition, "repeat": repeat, "mode_prompts": mode_prompts,
+                "system_prompt": _STATE.get("system_prompt", "(original explore_agent prompt)"),
+                "usage_totals": _usage_totals(calls)}
         json.dump({"calls": calls, "totals": _usage_totals(calls)}, open(os.path.join(d, "usage.json"), "w"), indent=1)
         for f in os.listdir(d):
             if f.startswith("pilot_") and f.endswith(".json"):
@@ -245,7 +273,7 @@ def estimate(n_seeds=51, desc_tokens=250, step_out=(50, 1000), probe_out=300):
                 inst = make_pair(s, "silent_break", matched=True)
                 cfg = A.ExploreConfig(seed=s)
                 res = A.run_explore_instance(inst, cfg, node_policy_fn=lambda m: pol(m, inst.labels))
-                system, msgs = A.build_system_prompt(inst.m0.goal), res["messages"]
+                system, msgs = A.build_system_prompt(*(inst.m0.goal, inst.start, cfg.max_steps_per_episode)[:len(__import__("inspect").signature(_ORIG["prompt"]).parameters)]), res["messages"]
                 total = steps = descs = 0
                 for i, m in enumerate(msgs):
                     if m["role"] == "assistant":
@@ -269,7 +297,10 @@ def estimate(n_seeds=51, desc_tokens=250, step_out=(50, 1000), probe_out=300):
 # ---------------------------------------------------------------- tests
 def test():
     import unittest
-    golden = _ORIG["prompt"]("C")
+    import inspect
+    n_args = len(inspect.signature(_ORIG["prompt"]).parameters)
+    pargs = ("C", "A", 20)[:n_args]
+    golden = _ORIG["prompt"](*pargs)
     def scripted(log):
         def act(system, messages):
             last = messages[-1]["content"]
@@ -296,7 +327,7 @@ def test():
             self.assertEqual(len(res["descriptions"]), 3); self.assertEqual(log.count("describe"), 3)
             roles = [m["role"] for m in res["messages"]]
             self.assertTrue(all(a != b for a, b in zip(roles, roles[1:])))
-            self.assertNotEqual(A.build_system_prompt("C"), golden)
+            self.assertNotEqual(A.build_system_prompt(*pargs), golden)
         def test_graph_given(self):
             inst, res, log = go("graph_given")
             specs = [m["content"] for m in res["messages"] if "Current network specification" in m["content"]]
@@ -319,6 +350,19 @@ def test():
             self.assertFalse(e["exposed"]); self.assertTrue(e["m0_any_use"])
             nc = {"instance": {"graph_seed": 33, "condition": "no_change"}, "explore": {"m0_episodes": [], "m1_episodes": []}}
             self.assertEqual(exposure(nc)["exposed"], "")
+        def test_mode_prompts(self):
+            for det in (True, False):
+                activate("task_only", mode_prompts=True)
+                inst = make_pair(33, "silent_break", matched=True, deterministic=det)
+                cfg = A.ExploreConfig(max_episodes_m0=1, max_episodes_m1=1, max_steps_per_episode=4, seed=33)
+                captured = []
+                def act(system, messages):
+                    captured.append(system); return '{"action": "a1"}', ""
+                A.run_explore_instance(inst, cfg, act_fn=act)
+                want, other = ("always succeeds or always fails", "fixed probability") if det else ("fixed probability", "always succeeds or always fails")
+                self.assertIn(want, captured[0]); self.assertNotIn(other, captured[0])
+            activate("task_only")
+            self.assertIs(A.build_system_prompt, _ORIG["prompt"])      # off by default
         def tearDown(self): activate("task_only")
     r = unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromTestCase(T))
     sys.exit(0 if r.wasSuccessful() else 1)
@@ -331,7 +375,8 @@ if __name__ == "__main__":
     if not head or head[0] not in ("run", "batch", "estimate", "test", "exposure"):
         print(__doc__); sys.exit(2)
     if head[0] == "test": test()
-    elif head[0] == "run": run(head[1], rest, int(head[head.index("--repeat") + 1]) if "--repeat" in head else 0)
+    elif head[0] == "run": run(head[1], rest, int(head[head.index("--repeat") + 1]) if "--repeat" in head else 0,
+                               "--mode-prompts" in head)
     elif head[0] == "batch": batch(head[1], head[2:] or list(CONDITIONS), rest)
     elif head[0] == "exposure": exposure_csv(head[1])
     else:
