@@ -1791,6 +1791,8 @@ def run_pilot_active(sc, deterministic, args):
         seed=sc["seed"])
 
     last_usage = {}
+    usage_totals = {"n_calls": 0, "prompt_tokens": 0,
+                    "completion_tokens": 0, "total_tokens": 0}
 
     def act_fn(system, messages):
         nonlocal last_usage  # so the caller can read usage after the call, since only (text, reasoning) is returned
@@ -1811,6 +1813,16 @@ def run_pilot_active(sc, deterministic, args):
         else:
             raise AssertionError("dry-run must not call act_fn")
         last_usage = usage
+        usage_totals["n_calls"] += 1
+        usage_totals["prompt_tokens"] += usage.get("prompt_tokens", 0)
+        usage_totals["completion_tokens"] += usage.get("completion_tokens", 0)
+        usage_totals["total_tokens"] += usage.get("total_tokens", 0)
+        print(f"[tokens] call {usage_totals['n_calls']}: "
+             f"prompt={usage.get('prompt_tokens', 0)} "
+             f"completion={usage.get('completion_tokens', 0)} | "
+             f"cumulative: prompt={usage_totals['prompt_tokens']} "
+             f"completion={usage_totals['completion_tokens']} "
+             f"total={usage_totals['total_tokens']}")
         return text, reasoning
 
     if args.provider == "dry-run":
@@ -1838,6 +1850,7 @@ def run_pilot_active(sc, deterministic, args):
         "model": {"provider": args.provider, "model": args.model,
                   "temperature": 0, "max_tokens": args.max_tokens},
         "explore": {
+            "action_protocol": explore_agent.ACTION_PROTOCOL,
             "config": asdict(cfg),
             "transcript": result["messages"],
             "m0_episodes": [_episode_to_json(e)
@@ -1882,7 +1895,13 @@ def run_pilot_active(sc, deterministic, args):
             "parsed": probe_result["parsed"],
             "scored": probe_result["scored"],
         }
+    artifact["token_usage_total"] = usage_totals
     return artifact
+
+
+def _format_optional_rate(value):
+    """Format a rate for the operator summary without rejecting null metrics."""
+    return "n/a" if value is None else f"{value:.2f}"
 
 
 def main():
@@ -2061,9 +2080,10 @@ def main():
         if mf is None:
             em = art.get("explore", {}).get("metrics", {})
             print(f"{path}: pinned={art['env']['pinned_to_freeze']} "
-                  f"opt_rate m0={em.get('optimal_action_rate_m0'):.2f} "
-                  f"m1={em.get('optimal_action_rate_m1'):.2f} "
-                  f"lag={em.get('adaptation_lag_steps')}\n")
+                  f"opt_rate m0={_format_optional_rate(em.get('optimal_action_rate_m0'))} "
+                  f"m1={_format_optional_rate(em.get('optimal_action_rate_m1'))} "
+                  f"switch={em.get('changed_action_switch', {}).get('status')} "
+                  f"decision_lag={em.get('changed_action_switch', {}).get('decision_lag')}\n")
         else:
             print(f"{path}: pinned={art['env']['pinned_to_freeze']} "
                   f"final={mf['per_phase_score']} "
