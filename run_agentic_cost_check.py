@@ -36,8 +36,12 @@ def _arg(name, default):
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
 SEEDS = [int(x) for x in _arg("--seeds", ",".join(map(str, SEEDS))).split(",")]
 MODE = _arg("--mode", MODE); SETUP[SETUP.index("--mode") + 1] = MODE
+HISTORY = _arg("--history", "none")                 # ablation: retained_reports_v2 | separate_reports_post_task_v1
+MATCHED_PREP = "--matched-prep" in sys.argv          # ablation: preparation turn for every arm, as in ICL
+SWITCHES = ["--mode-prompts", "--history", HISTORY] + (["--matched-prep"] if MATCHED_PREP else [])
 RUN_DIR = os.path.join(ROOT, "runs", ("DRY_" if DRY else "") + datetime.date.today().isoformat()
-                       + f"_agentic_cost_check_{MODE}_seeds{'-'.join(map(str, SEEDS))}")
+                       + f"_agentic_cost_check_{MODE}_seeds{'-'.join(map(str, SEEDS))}"
+                       + ("" if HISTORY == "none" else f"_{HISTORY.split('_')[0]}") + ("_prep" if MATCHED_PREP else ""))
 CRED = os.path.expanduser("~/.ecpm_azure.json")
 
 def creds():
@@ -64,11 +68,17 @@ def queue():
     return items
 
 def tag(c, s, r): return f"s{s}_{c}_r{r}"
-def done(t): return os.path.exists(os.path.join(RUN_DIR, t, "usage.json"))
+def _artifact(t):
+    d = os.path.join(RUN_DIR, t)
+    fs = [f for f in os.listdir(d) if f.startswith("pilot_") and f.endswith(".json")] if os.path.isdir(d) else []
+    return os.path.join(d, fs[0]) if fs else None
+
+def done(t): return os.path.exists(os.path.join(RUN_DIR, t, "condition.json")) and _artifact(t) is not None
 
 def tokens(t):
-    u = json.load(open(os.path.join(RUN_DIR, t, "usage.json")))["totals"]
-    return u["input_tokens"], u["output_tokens"]
+    """From run_pilot's token_usage_total in the artifact (the project's one token log)."""
+    u = json.load(open(_artifact(t))).get("token_usage_total") or {}
+    return int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
 
 def log(msg):
     line = f"{datetime.datetime.now():%H:%M:%S} {msg}"
@@ -80,7 +90,7 @@ def run_one(c, s, r, cr):
     prov = ["--provider", "dry-run"] if DRY else ["--provider", "azure", "--model", cr["deployment"], "--azure-endpoint", cr["endpoint"]]
     if not DRY and cr["deployment"].lower().startswith(("gpt-5", "o1", "o3", "o4")):
         prov.append("--azure-reasoning-model")   # reasoning deployments need different request fields
-    cmd = [sys.executable, "-B", "agentic_conditions.py", "run", c, "--repeat", str(r), "--mode-prompts", "--"] + SETUP + \
+    cmd = [sys.executable, "-B", "agentic_conditions.py", "run", c, "--repeat", str(r)] + SWITCHES + ["--"] + SETUP + \
           ["--seed", str(s), "--tag", t, "--out", RUN_DIR] + prov
     env = dict(os.environ, AZURE_OPENAI_API_KEY=cr.get("key", ""))
     with open(os.path.join(RUN_DIR, "stdout.txt"), "a") as out:
@@ -128,7 +138,9 @@ def main():
         fin = [x for x in queue() if done(tag(*x))]
         ti = sum(tokens(tag(*x))[0] for x in fin); to = sum(tokens(tag(*x))[1] for x in fin)
         cost = ti / 1e6 * PRICE_IN + to / 1e6 * PRICE_OUT
-        log(f"done {len(fin)}/{len(queue())}  tokens in {ti:,} out {to:,}  cost so far ${cost:.2f}")
+        ri, ro = tokens(tag(c, s, r))
+        log(f"done {len(fin)}/{len(queue())}  this run: in {ri:,} out {ro:,} ${ri / 1e6 * PRICE_IN + ro / 1e6 * PRICE_OUT:.2f}"
+            f"  |  total: in {ti:,} out {to:,} ${cost:.2f}")
         if not asked:
             per = cost / len(fin); total = per * len(queue())
             ans = input(f"First run used {ti:,} input / {to:,} output tokens (${per:.2f}). "
