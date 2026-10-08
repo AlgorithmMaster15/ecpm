@@ -11,7 +11,8 @@ task_only applies no wrapping at all, so it is the existing arm unchanged.
 
 Commands (repository root):
   python3 -B agentic_conditions.py test
-  python3 -B agentic_conditions.py run CONDITION [--repeat R] [--mode-prompts] -- <run_pilot.py arguments>
+  python3 -B agentic_conditions.py run CONDITION [--repeat R] [--mode-prompts]
+        [--history none|retained_reports_v2|separate_reports_post_task_v1] [--matched-prep] -- <run_pilot.py arguments>
   python3 -B agentic_conditions.py batch OUTDIR [CONDITION ...] -- <provider arguments>
   python3 -B agentic_conditions.py estimate [--seeds 51]
   python3 -B agentic_conditions.py exposure RUNS_DIR      # writes RUNS_DIR/exposure.csv
@@ -55,12 +56,25 @@ MODEL_FIRST_UPDATE = (
     "you find useful. Describe the current network so that your model can be "
     "used to choose actions later. Reply in free text; do not include a JSON "
     "object.")
+# Ablation switches, named as in the ICL arm (icl_model_first.py) so both arms line up.
+HISTORY_POLICIES = ("none", "retained_reports_v2", "separate_reports_post_task_v1")
+PREPARE_TEXT = (   # ICL PREPARE_A wording, adapted to acting
+    "Before the next episode, review what you have observed so far and prepare "
+    "for the episodes ahead. Write any notes you find useful. Reply in free text; "
+    "do not include a JSON object.")
+REPORT_TEXT = (    # the Period A report, asked once after the M0 episodes
+    "Report what you currently believe about every action you have tried. For each "
+    "location and action label give whether the action is available, the location it "
+    "leads to, and its success probability as a number from 0 to 1. Reply with exactly "
+    "one JSON object of the form {\"transitions\": [{\"location\": \"A\", \"action\": "
+    "\"a1\", \"available\": true, \"destination\": \"B\", \"p_success\": 0.8}]}.")
 SEEDS_51 = [33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 45, 46, 48, 49, 51, 52, 53, 54, 55, 56,
             57, 58, 59, 60, 61, 62, 63, 64, 66, 68, 69, 70, 71, 72, 73, 74, 76, 77, 78, 79, 81,
             83, 84, 85, 86, 87, 88, 89, 90, 91]
 
 _ORIG = {"prompt": A.build_system_prompt, "policy": A._build_recording_policy, "run": A.run_explore_instance}
 _STATE = {"condition": "task_only", "episodes": 0, "mdp": None, "descriptions": [],
+          "history": "none", "matched_prep": False, "reports": [],
           "mode_prompts": False, "deterministic": False}
 
 
@@ -118,14 +132,32 @@ def _policy(mdp, labels, cfg, messages, step_meta, **kw):
     if cond == "graph_given" and phase_start:
         spec = graph_text(mdp, labels)
         kw["initial_note"] = spec if kw.get("initial_note") is None else kw["initial_note"] + "\n\n" + spec
-    if cond == "model_first" and _STATE["episodes"] > 0:
-        ask = MODEL_FIRST_FIRST if _STATE["episodes"] == 1 else MODEL_FIRST_UPDATE
+    act = kw.get("act_fn")
+    def call(msgs):
+        return act(kw["system_prompt"], msgs) if act else (_STATE.get("dry_text", "(dry-run reply)"), "")
+    if _STATE["history"] != "none" and phase_start and _STATE["episodes"] > 0:
+        # Period A report after the M0 episodes: retained keeps it for M1, separate asks it on a copy.
+        probe = [dict(m) for m in messages]
+        if probe and probe[-1]["role"] == "user":
+            probe[-1] = {"role": "user", "content": probe[-1]["content"] + "\n\n" + REPORT_TEXT}
+        else:
+            probe.append({"role": "user", "content": REPORT_TEXT})
+        text, reasoning = call(probe)
+        _STATE["reports"].append({"after_episode": _STATE["episodes"], "history": _STATE["history"],
+                                  "text": text, "reasoning": reasoning})
+        if _STATE["history"] == "retained_reports_v2":
+            messages[:] = probe + [{"role": "assistant", "content": text}]
+    prep = cond == "model_first" or (_STATE["matched_prep"] and cond in ("task_only", "graph_given"))
+    if prep and _STATE["episodes"] > 0:
+        if cond == "model_first":
+            ask = MODEL_FIRST_FIRST if _STATE["episodes"] == 1 else MODEL_FIRST_UPDATE
+        else:
+            ask = PREPARE_TEXT
         if messages and messages[-1]["role"] == "user":       # keep roles alternating
             messages[-1] = {"role": "user", "content": messages[-1]["content"] + "\n\n" + ask}
         else:
             messages.append({"role": "user", "content": ask})
-        act = kw.get("act_fn")
-        text, reasoning = act(kw["system_prompt"], messages) if act else (_STATE.get("dry_text", "(dry-run model description)"), "")
+        text, reasoning = call(messages)
         messages.append({"role": "assistant", "content": text})
         _STATE["descriptions"].append({"before_episode": _STATE["episodes"], "text": text,
                                        "reasoning": reasoning, "scored": "not_scored_by_design"})
@@ -134,18 +166,21 @@ def _policy(mdp, labels, cfg, messages, step_meta, **kw):
 
 
 def _run(inst, cfg, act_fn=None, node_policy_fn=None):
-    _STATE.update(episodes=0, mdp=None, descriptions=[], deterministic=bool(getattr(inst, "deterministic", False)))
+    _STATE.update(episodes=0, mdp=None, descriptions=[], reports=[], deterministic=bool(getattr(inst, "deterministic", False)))
     res = _ORIG["run"](inst, cfg, act_fn=act_fn, node_policy_fn=node_policy_fn)
     res["descriptions"], res["condition"] = list(_STATE["descriptions"]), _STATE["condition"]
+    res["reports"] = list(_STATE["reports"])
     return res
 
 
-def activate(condition, mode_prompts=False):
-    """Switch explore_agent to `condition`. task_only without mode prompts restores the originals."""
+def activate(condition, mode_prompts=False, history="none", matched_prep=False):
+    """Switch explore_agent to `condition`. With every switch off, task_only restores the originals."""
     if condition not in CONDITIONS:
         raise ValueError(f"unknown condition {condition!r}; expected one of {CONDITIONS}")
-    _STATE["condition"], _STATE["mode_prompts"] = condition, mode_prompts
-    if condition == "task_only" and not mode_prompts:
+    if history not in HISTORY_POLICIES:
+        raise ValueError(f"unknown history {history!r}; expected one of {HISTORY_POLICIES}")
+    _STATE.update(condition=condition, mode_prompts=mode_prompts, history=history, matched_prep=matched_prep)
+    if condition == "task_only" and not mode_prompts and history == "none" and not matched_prep:
         A.build_system_prompt, A._build_recording_policy, A.run_explore_instance = \
             _ORIG["prompt"], _ORIG["policy"], _ORIG["run"]
     else:
@@ -153,17 +188,44 @@ def activate(condition, mode_prompts=False):
         A._build_recording_policy, A.run_explore_instance = _policy, _run
 
 
+def tokens_of(artifact):
+    """Token totals from run_pilot's token_usage_total, used when a run has no usage.json."""
+    t = artifact.get("token_usage_total") or {}
+    return {"calls": t.get("n_calls", ""), "input_tokens": t.get("prompt_tokens", ""),
+            "output_tokens": t.get("completion_tokens", "")}
+
+
 # ---------------------------------------------------------------- exposure
+def must_update(artifact, inst=None):
+    """True if the agent's own last M0 route became invalid or more expensive after the change
+    (restraint cases, where the old route stays best, are False); "" if it never reached the goal."""
+    ins = artifact.get("instance", {})
+    m0 = artifact.get("explore", {}).get("m0_episodes")
+    if inst is None and ("graph_seed" not in ins or not m0):
+        return ""   # not enough information in this artifact (e.g. a metrics-only record)
+    inst = inst or make_pair(ins["graph_seed"], ins["condition"], matched=ins.get("matched", True),
+                             deterministic=ins.get("deterministic", False))
+    if not m0:
+        return ""
+    moves = [(st["node"], st["next_node"]) for st in m0[-1]["steps"] if st.get("success")]
+    if not moves or moves[-1][1] != inst.m1.goal:
+        return ""
+    ps = [inst.m1.p.get(e, 0) for e in moves]
+    cost = sum(1 / p for p in ps) if all(p > 0 for p in ps) else float("inf")
+    return cost > inst.oracle["post"]["optimal_cost"] + 5e-4
+
+
 def exposure(artifact):
     """Did the agent's own route meet the changed link? See the module docstring."""
     ins = artifact["instance"]
     cond = ins["condition"]
     if cond == "no_change":
-        return {"changed_link": "", "m0_route_uses": "", "m0_any_use": "", "m1_attempts": "", "exposed": ""}
+        return {"changed_link": "", "m0_route_uses": "", "must_update": "", "m0_any_use": "", "m1_attempts": "", "exposed": ""}
     usage = artifact['explore'].get('metrics', {}).get('changed_action_usage', {})
     if 'm0_route_uses' in usage:
         return {'changed_link': f"{usage['node']}:{usage['action_label']}",
                 'm0_route_uses': usage['m0_route_uses'],
+                'must_update': must_update(artifact),
                 'm0_any_use': usage['m0']['n_choices'] > 0,
                 'm1_attempts': usage['m1']['n_choices'],
                 'exposed': usage['m0_route_uses']}
@@ -175,7 +237,7 @@ def exposure(artifact):
     m0 = artifact["explore"]["m0_episodes"]
     m1 = artifact["explore"]["m1_episodes"]
     route_uses = bool(m0) and uses(m0[-1])
-    return {"changed_link": f"{u}:{label}", "m0_route_uses": route_uses,
+    return {"changed_link": f"{u}:{label}", "m0_route_uses": route_uses, "must_update": must_update(artifact, inst),
             "m0_any_use": any(uses(ep) for ep in m0),
             "m1_attempts": sum(1 for ep in m1 for st in ep["steps"] if st["node"] == u and st.get("action_label") == label),
             "exposed": route_uses}
@@ -192,7 +254,7 @@ def exposure_csv(runs_dir):
                     continue
                 meta_p = os.path.join(root, "condition.json")
                 meta = json.load(open(meta_p)) if os.path.exists(meta_p) else {}
-                tot = meta.get("usage_totals", {})
+                tot = meta.get("usage_totals") or tokens_of(a)   # fall back to run_pilot's token_usage_total
                 rows.append({"run": os.path.relpath(os.path.join(root, f), runs_dir), "seed": a["instance"]["graph_seed"],
                              "mode": "det" if a["instance"].get("deterministic") else "sto",
                              "scenario": a["instance"]["condition"], "prompt_condition": meta.get("condition", "task_only"),
@@ -212,8 +274,8 @@ def exposure_csv(runs_dir):
 
 
 # ---------------------------------------------------------------- run / batch
-def run(condition, pilot_args, repeat=0, mode_prompts=False):
-    activate(condition, mode_prompts)
+def run(condition, pilot_args, repeat=0, mode_prompts=False, history="none", matched_prep=False):
+    activate(condition, mode_prompts, history, matched_prep)
     import run_pilot
     calls = []
     orig_retry = run_pilot.with_retry
@@ -238,7 +300,7 @@ def run(condition, pilot_args, repeat=0, mode_prompts=False):
     tag = pilot_args[pilot_args.index("--tag") + 1] if "--tag" in pilot_args else None
     if tag:   # sidecar: the condition and exposure are not in run_pilot's artifact schema
         d = os.path.join(out, tag); os.makedirs(d, exist_ok=True)
-        meta = {"condition": condition, "repeat": repeat, "mode_prompts": mode_prompts,
+        meta = {"history": history, "matched_prep": matched_prep, "reports": list(_STATE["reports"]), "condition": condition, "repeat": repeat, "mode_prompts": mode_prompts,
                 "system_prompt": _STATE.get("system_prompt", "(original explore_agent prompt)"),
                 "usage_totals": _usage_totals(calls)}
         json.dump({"calls": calls, "totals": _usage_totals(calls)}, open(os.path.join(d, "usage.json"), "w"), indent=1)
@@ -404,6 +466,27 @@ def test():
                 self.assertIn(want, captured[0]); self.assertNotIn(other, captured[0])
             activate("task_only")
             self.assertIs(A.build_system_prompt, _ORIG["prompt"])      # off by default
+        def test_history_and_prep_switches(self):
+            for hist in ("retained_reports_v2", "separate_reports_post_task_v1"):
+                activate("task_only", history=hist, matched_prep=True)
+                inst = make_pair(33, "silent_break", matched=True)
+                cfg = A.ExploreConfig(max_episodes_m0=2, max_episodes_m1=2, max_steps_per_episode=6, seed=33)
+                res = A.run_explore_instance(inst, cfg, act_fn=scripted([]))
+                text = "".join(m["content"] for m in res["messages"])
+                self.assertEqual(len(res["reports"]), 1)
+                self.assertEqual(REPORT_TEXT in text, hist == "retained_reports_v2")
+                self.assertIn("prepare for the episodes ahead", text)
+            with self.assertRaises(ValueError): activate("task_only", history="kept")
+        def test_must_update(self):
+            activate("task_only")
+            inst = make_pair(33, "silent_break", matched=True)
+            route = inst.oracle["pre"]["optimal_route"]
+            ep = {"steps": [{"node": a, "next_node": b, "success": True, "action_label": inst.labels[(a, b)]} for a, b in zip(route, route[1:])]}
+            art = {"instance": {"graph_seed": 33, "condition": "silent_break", "matched": True, "deterministic": False},
+                   "explore": {"m0_episodes": [ep], "m1_episodes": []}}
+            self.assertTrue(must_update(art))
+            art["instance"]["condition"] = "irrelevant"
+            self.assertFalse(must_update(art))
         def tearDown(self): activate("task_only")
     r = unittest.TextTestRunner(verbosity=1).run(unittest.defaultTestLoader.loadTestsFromTestCase(T))
     sys.exit(0 if r.wasSuccessful() else 1)
@@ -417,7 +500,9 @@ if __name__ == "__main__":
         print(__doc__); sys.exit(2)
     if head[0] == "test": test()
     elif head[0] == "run": run(head[1], rest, int(head[head.index("--repeat") + 1]) if "--repeat" in head else 0,
-                               "--mode-prompts" in head)
+                               "--mode-prompts" in head,
+                               head[head.index("--history") + 1] if "--history" in head else "none",
+                               "--matched-prep" in head)
     elif head[0] == "batch": batch(head[1], head[2:] or list(CONDITIONS), rest)
     elif head[0] == "exposure": exposure_csv(head[1])
     else:
