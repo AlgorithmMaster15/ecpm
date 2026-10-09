@@ -36,6 +36,9 @@ def load(run_dir):
             "reasoning": (a.get("reasoning_control") or {}).get("mode", "unrecorded"),
             "reasoning_tokens": (a.get("reasoning_control") or {}).get("reasoning_tokens_total"),
             "reasoning_violation": (a.get("reasoning_control") or {}).get("violation"),
+            "billed_cost": (sum(u["cost"] for u in a.get("provider_usage_calls") or [])
+                            if a.get("provider_usage_calls") and all(isinstance((u or {}).get("cost"), (int, float))
+                                                                     for u in a["provider_usage_calls"]) else None),
             "calls": tok.get("n_calls"), "input_tokens": tok.get("prompt_tokens"), "output_tokens": tok.get("completion_tokens"),
         })
     return rows
@@ -62,7 +65,7 @@ def tables(rows):
                ("Exposed (share of runs)", "exposed"), ("Detection correct", "detection"),
                ("Localization correct", "localization"), ("Preservation accuracy", "preservation"),
                ("Route probe optimal", "route_probe_optimal"), ("Input tokens", "input_tokens"),
-               ("Output tokens", "output_tokens"), ("Cost per run (USD)", "cost_usd")]
+               ("Output tokens", "output_tokens"), ("Cost per run (USD, billed where reported)", "cost_usd")]
     lines += ["| Metric | " + " | ".join(arms) + " |", "|---|" + "---|" * len(arms)]
     for label, key in metrics:
         if key is None:
@@ -86,7 +89,10 @@ def main(run_dir):
     if not rows:
         sys.exit("no runs found (expected */condition.json and */pilot_*.json)")
     for r in rows:
-        r["cost_usd"] = round((r["input_tokens"] or 0) / 1e6 * PRICE_IN + (r["output_tokens"] or 0) / 1e6 * PRICE_OUT, 4)
+        if r.get("billed_cost") is None:   # no provider-reported cost: estimate from list prices
+            r["cost_usd"], r["cost_source"] = round((r["input_tokens"] or 0) / 1e6 * PRICE_IN + (r["output_tokens"] or 0) / 1e6 * PRICE_OUT, 4), "estimate"
+        else:
+            r["cost_usd"], r["cost_source"] = round(r["billed_cost"], 4), "billed"
     with open(os.path.join(run_dir, "agentic_runs.csv"), "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
     lines = []

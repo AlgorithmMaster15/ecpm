@@ -19,8 +19,10 @@ All options (combine freely):
                       OpenRouter reasoning {enabled: false} / {effort: medium}
   --reasoning-control JSON   override that control, e.g. '{"reasoning_effort": "low"}'
   --openrouter MODEL_ID      run through OpenRouter instead of Azure
-  --price-in X --price-out Y USD per million tokens, for the cost line
+  --price-in X --price-out Y USD per million tokens, used only when the provider reports
+                      no billed cost (OpenRouter reports it, cache discounts included)
   --dry               no API calls
+  --yes               skip the confirmation after the first run (for unattended loops)
 Every option is recorded in the run folder name and in each run's artifact.
 
 What it does:
@@ -51,8 +53,21 @@ RUN_TIMEOUT = 3600                            # seconds per run
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DRY = "--dry" in sys.argv
+YES = "--yes" in sys.argv          # skip the one confirmation after the first run (unattended batches)
 if "--help" in sys.argv or "-h" in sys.argv:
     print(__doc__); sys.exit(0)
+VALUE_FLAGS = {"--seeds", "--mode", "--condition", "--history", "--reasoning", "--reasoning-control",
+               "--openrouter", "--price-in", "--price-out"}
+SWITCH_FLAGS = {"--dry", "--yes", "--matched-prep", "--help", "-h"}
+_rest = sys.argv[1:]
+while _rest:   # a mistyped option would otherwise be ignored silently, e.g. a run without its reasoning control
+    _flag = _rest.pop(0)
+    if _flag in VALUE_FLAGS:
+        if not _rest or _rest[0].startswith("--"):
+            sys.exit(f"{_flag} needs a value (see --help)")
+        _rest.pop(0)
+    elif _flag not in SWITCH_FLAGS:
+        sys.exit(f"unknown option {_flag!r} (see --help)")
 def _arg(name, default):
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
 SEEDS = [int(x) for x in _arg("--seeds", ",".join(map(str, SEEDS))).split(",")]
@@ -63,7 +78,8 @@ if SCENARIO != "silent_break":
 if SCENARIO == "no_change":     # nothing changed, so there is nothing to localize
     SETUP += ["--probes", "detection", "preservation", "adaptation"]
 OPENROUTER = _arg("--openrouter", "")             # e.g. --openrouter deepseek/deepseek-chat
-PRICE_IN = float(_arg("--price-in", PRICE_IN)); PRICE_OUT = float(_arg("--price-out", PRICE_OUT))
+_price = lambda v: float(str(v).replace(",", "."))   # accept 0,0173 as typed on comma-decimal systems
+PRICE_IN = _price(_arg("--price-in", PRICE_IN)); PRICE_OUT = _price(_arg("--price-out", PRICE_OUT))
 HISTORY = _arg("--history", "none")                 # ablation: retained_reports_v2 | separate_reports_post_task_v1
 MATCHED_PREP = "--matched-prep" in sys.argv
 REASONING = _arg("--reasoning", "")                 # off | on; empty = model default, not controlled
@@ -82,6 +98,20 @@ CRED = os.path.expanduser("~/.ecpm_azure.json")
 def openrouter_creds():
     k = os.environ.get("OPENROUTER_API_KEY") or getpass.getpass("OpenRouter API key: ").strip()
     return {"key": k}
+
+def drain_typeahead():
+    """Discard keys already waiting in the console, so only a fresh answer counts."""
+    try:
+        import msvcrt                      # Windows console
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+    except ImportError:
+        try:
+            import termios                 # macOS / Linux terminal
+            if sys.stdin.isatty():
+                termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except Exception:
+            pass
 
 def creds():
     c = json.load(open(CRED)) if os.path.exists(CRED) else {}
@@ -118,6 +148,16 @@ def tokens(t):
     """From run_pilot's token_usage_total in the artifact (the project's one token log)."""
     u = json.load(open(_artifact(t))).get("token_usage_total") or {}
     return int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+
+def run_cost(t):
+    """(USD, source) for one run: the provider's billed cost when every call reports one
+    (OpenRouter does, cache discounts included), else an estimate from the list prices."""
+    a = json.load(open(_artifact(t)))
+    calls = a.get("provider_usage_calls") or []
+    if calls and all(isinstance((u or {}).get("cost"), (int, float)) for u in calls):
+        return sum(u["cost"] for u in calls), "billed"
+    i, o = tokens(t)
+    return i / 1e6 * PRICE_IN + o / 1e6 * PRICE_OUT, "est."
 
 def log(msg):
     line = f"{datetime.datetime.now():%H:%M:%S} {msg}"
@@ -158,7 +198,8 @@ def run_one(c, s, r, cr):
         env["OPENAI_API_KEY"] = cr.get("key", "")
     with open(os.path.join(RUN_DIR, "stdout.txt"), "a") as out:
         try:
-            ok = subprocess.run(cmd, cwd=ROOT, env=env, stdout=out, stderr=out, timeout=RUN_TIMEOUT).returncode == 0
+            ok = subprocess.run(cmd, cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                                timeout=RUN_TIMEOUT).returncode == 0
         except subprocess.TimeoutExpired:
             ok = False
     return ok and done(t)
@@ -172,7 +213,7 @@ def main():
     os.makedirs(RUN_DIR, exist_ok=True)
     cr = {} if DRY else (openrouter_creds() if OPENROUTER else creds())
     log(f"start {'DRY ' if DRY else ''}batch in {RUN_DIR}")
-    asked = DRY
+    asked = DRY or YES
     streak = 0   # consecutive failures: three in a row means a setup problem, not a bad run
     while True:
         if os.path.exists(os.path.join(RUN_DIR, "STOP")):
@@ -200,14 +241,18 @@ def main():
         summary()
         fin = [x for x in queue() if done(tag(*x))]
         ti = sum(tokens(tag(*x))[0] for x in fin); to = sum(tokens(tag(*x))[1] for x in fin)
-        cost = ti / 1e6 * PRICE_IN + to / 1e6 * PRICE_OUT
+        costs = [run_cost(tag(*x)) for x in fin]
+        cost = sum(v for v, _ in costs)
+        kind = "billed" if all(k == "billed" for _, k in costs) else "est."
         ri, ro = tokens(tag(c, s, r))
-        log(f"done {len(fin)}/{len(queue())}  this run: in {ri:,} out {ro:,} ${ri / 1e6 * PRICE_IN + ro / 1e6 * PRICE_OUT:.2f}"
-            f"  |  total: in {ti:,} out {to:,} ${cost:.2f}")
+        rc, rk = run_cost(tag(c, s, r))
+        log(f"done {len(fin)}/{len(queue())}  this run: in {ri:,} out {ro:,} ${rc:.2f} {rk}"
+            f"  |  total: in {ti:,} out {to:,} ${cost:.2f} {kind}")
         if not asked:
             per = cost / len(fin); total = per * len(queue())
-            ans = input(f"First run used {ti:,} input / {to:,} output tokens (${per:.2f}). "
-                        f"Projected for all {len(queue())} runs: ${total:.0f}. Continue? [y/N] ").strip().lower()
+            drain_typeahead()   # keys typed or pasted during the run must not answer this question
+            ans = input(f"First run used {ti:,} input / {to:,} output tokens (${per:.2f} {kind}). "
+                        f"Projected for all {len(queue())} runs: ${total:.2f}. Continue? [y/N] ").strip().lower()
             asked = True
             if ans != "y": log("stopped after the first run, as asked"); break
     summary()
