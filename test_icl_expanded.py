@@ -1,12 +1,16 @@
 """Offline expanded contract and injected-defect tests. No live connections."""
 
 import copy
+import ast
 import csv
 import itertools
 import json
 import sys
+import subprocess
 import tempfile
 import unittest
+import types
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -543,6 +547,127 @@ class Expanded(unittest.TestCase):
         self.assertEqual((plan['conversations'],plan['responses']),(5500,30800))
         self.assertTrue(all(r['k']==10 for r in plan['rows']))
         self.assertEqual(runner.block_cost_plan(self.world,'baseline_task',None,repeats=5,design_api=x)['requests'],20)
+
+
+class PreparationScope(unittest.TestCase):
+    def assert_scoped(self, text, period):
+        self.assertIn('For later task-answer turns only, not this preparation turn:', text)
+        self.assertIn('On those later task-answer turns, return only a JSON object with a routes list.', text)
+        self.assertIn('Current turn: preparation, not a task answer.', text)
+        self.assertIn('Task-answer JSON is not required on this turn.', text)
+        self.assertNotIn('Return only a JSON object with a routes list.', text)
+        if period == 'B':
+            self.assertIn('On the later task-answer turn, also report changed', text)
+
+    def test_scope_all_arms_periods_histories_and_modes(self):
+        for mode, arm, history in itertools.product(x.SYSTEM, x.ARMS, x.HISTORY_POLICIES):
+            w = x.build_world(8, mode, 'silent_break')
+            answers = x.oracle_answers(w)
+            answers['A_prepare'] = '{malformed preparation retained exactly\n\t'
+            answers['A_readout'] = 'MALFORMED A REPORT'
+            calls = x.schedule(w, arm, answers, history)
+            for call in calls:
+                period, stage = call['id'].split('_')
+                if stage == 'prepare':
+                    text = call['messages'][-1]['content']
+                    self.assert_scoped(text, period)
+                    instruction = x.MODEL_PREP if arm == 'model_first' else x.SPONTANEOUS_PREP if arm == 'spontaneous' else x.NEUTRAL_PREP
+                    self.assertTrue(text.endswith(instruction))
+                    self.assertIn('approximately 250 words', text)
+                    if period == 'B':
+                        self.assertIn({'role':'assistant','content':answers['A_prepare']}, call['messages'])
+                        self.assertEqual({'role':'assistant','content':answers['A_readout']} in call['messages'], history == 'retained_reports_v2')
+                    else:
+                        self.assertNotIn('Period B', text)
+            if arm == 'baseline_task':
+                self.assertEqual(len(calls), 4)
+                self.assertNotIn('Current turn: preparation', calls[0]['messages'][-1]['content'])
+            else:
+                self.assertEqual(len(calls), 6)
+        # Inject the original missing scope; the same guard must reject it.
+        with patch.object(x, 'task_guide', side_effect=lambda period, preparation=False: 'Return only a JSON object with a routes list.'):
+            with self.assertRaisesRegex(AssertionError, 'later task-answer'):
+                self.assert_scoped(x.prompts(w, 'A', 'model_first')['prepare'], 'A')
+
+    def test_only_preparation_text_and_policy_change_from_published_source(self):
+        source = subprocess.check_output(['git', 'show',
+            '96cdd374b1d9acceb30096de4df929bb8cdabe34:icl_expanded.py'],
+            cwd=Path(x.__file__).parent, text=True)
+        prior = types.ModuleType('published_expanded_scope_reference')
+        exec(compile(source, '<published expanded source>', 'exec'), prior.__dict__)
+        def unchanged_nodes(text):
+            return [ast.dump(n) for n in ast.parse(text).body
+                if not (isinstance(n, ast.FunctionDef) and n.name in ('task_guide', 'prompts'))
+                and not (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PREPARATION_POLICY' for t in n.targets))]
+        self.assertEqual(unchanged_nodes(source), unchanged_nodes(Path(x.__file__).read_text()))
+        self.assertEqual(prior.PREPARATION_POLICY, 'five_arms_length_target_v2')
+        self.assertEqual(x.PREPARATION_POLICY, 'five_arms_scoped_preparation_v3')
+        for seed, mode, scenario in x.configurations():
+            w = x.build_world(seed, mode, scenario)
+            self.assertEqual(w, prior.build_world(seed, mode, scenario))
+            self.assertEqual(x.oracle_answers(w), prior.oracle_answers(w))
+            for period, arm in itertools.product(('A','B'), x.ARMS):
+                before, after = prior.prompts(w, period, arm), x.prompts(w, period, arm)
+                self.assertEqual(before['task'], after['task'])
+                self.assertEqual(before['readout'], after['readout'])
+                if arm == 'baseline_task':
+                    self.assertEqual(before, after)
+                else:
+                    self.assertEqual(before['prepare'].split('\n\n')[0], after['prepare'].split('\n\n')[0])
+                    self.assert_scoped(after['prepare'], period)
+
+    def test_policy_separates_identity_and_rejects_old_readiness(self):
+        w = x.build_world(8, 'det', 'silent_break')
+        args = report.arguments('model_first', 'off', old.HISTORY_POLICY)
+        current = x.identity(w, 'model_first', 1, args, None)
+        with patch.object(x, 'PREPARATION_POLICY', 'five_arms_length_target_v2'):
+            previous = x.identity(w, 'model_first', 1, args, None)
+        self.assertNotEqual(runner.canonical(current), runner.canonical(previous))
+        self.assertNotEqual(compatible_identity({'identity':current,'synthetic':True,'deployment':None}),
+                            compatible_identity({'identity':previous,'synthetic':True,'deployment':None}))
+        config_wrapper = wrapper()
+        config_wrapper['expanded']['preparation_policy'] = 'five_arms_length_target_v2'
+        with self.assertRaisesRegex(ValueError, 'identity mismatch'):
+            x.validate_config(config_wrapper, 'gemma_31b_together', 'off', old.HISTORY_POLICY)
+
+    def test_review_exposes_empty_task_json_without_rescore_or_retry(self):
+        w = x.build_world(8, 'det', 'silent_break')
+        answers = x.oracle_answers(w)
+        answers['A_prepare'] = ' \n{"routes":[]}\t'
+        answers['B_prepare'] = '{"routes":[],"changed":true,"changed_pair":{"state":"G","action":"a1"}}'
+        with tempfile.TemporaryDirectory() as folder, patch.object(x, 'oracle_answers', return_value=answers), \
+             patch.object(runner, 'call_provider', side_effect=AssertionError('no live calls')):
+            a = runner.run_once(w, 'model_first', 1, report.arguments('model_first','off',old.HISTORY_POLICY), None, folder, x)
+            self.assertEqual(a['state'], 'completed')
+            self.assertEqual(len(a['turns']), 6)
+            self.assertTrue(all(runner.audit_artifact(a, x).values()))
+            paths = list(Path(folder).glob('*.json'))
+            original = paths[0].read_bytes()
+            archive = Path(folder) / 'pilot.zip'
+            with zipfile.ZipFile(archive, 'w') as z:
+                z.writestr('pilot/' + paths[0].name, original)
+            with patch.object(x, 'score_conversation', side_effect=AssertionError('no rescoring')), \
+                 patch.object(runner, 'audit_artifact', side_effect=AssertionError('historical audit uses its own version')):
+                result = report.review_preparation([archive])
+            self.assertEqual(result['groups'][0]['completed_both_empty_task_json'], 1)
+            self.assertTrue(all(r['status'] == 'empty_task_answer_json' for r in result['responses']))
+            self.assertEqual(paths[0].read_bytes(), original)
+            self.assertEqual(a['turns']['A_prepare']['raw_response'], answers['A_prepare'])
+            with self.assertRaisesRegex(ValueError, 'duplicate run'):
+                report.review_preparation([archive, archive])
+
+    def test_review_does_not_call_other_answers_compliant_or_empty_inputs_pass(self):
+        for text in ('notes about {"routes":[]}', '{broken', '{"routes":[],"model":{}}',
+                     '{"transitions":[]}', '{"routes":[{"query_id":"q0"}]}', '', None):
+            self.assertFalse(report.empty_task_answer_json(text))
+        self.assertTrue(report.empty_task_answer_json('{"routes":[],"changed":false,"changed_pair":null}'))
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(ValueError, 'no preparation responses examined'):
+                report.review_preparation([folder])
+            path = Path(folder) / 'icl_expanded_v2_damaged.json'
+            path.write_text('{damaged')
+            with self.assertRaises(json.JSONDecodeError):
+                report.review_preparation([folder])
 
 
 if __name__ == '__main__':

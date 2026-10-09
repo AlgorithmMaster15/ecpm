@@ -26,6 +26,31 @@ counting procedure. A word target does not guarantee equal generated tokens or
 reasoning effort, so actual words and usage are saved. Baseline intentionally has
 one less response per period.
 
+Preparation policy `five_arms_scoped_preparation_v3` labels the current turn as
+preparation and scopes route-answer JSON requirements to later task-answer turns.
+The open model representation, neutral preparation instruction and approximate
+250-word target are unchanged. JSON representations are still allowed; task-answer
+JSON is not the required preparation format. There is no added solution procedure.
+Task/readout questions, history-retention rules and scorer `icl_expanded_rows_v3`
+are unchanged. Rendered histories acquire the newly scoped preparation text.
+
+Earlier `five_arms_length_target_v2` prompts remain reproducible at commit
+`96cdd374b1d9acceb30096de4df929bb8cdabe34`. Keep their results separate from this
+policy; use the corresponding historical checkout to audit them. New readiness
+wrappers must name the new preparation policy and recheck context capacity.
+Do not relabel historical records or retry preparation noncompliance.
+
+For a read-only pilot format review, without rescoring, use an unused output path:
+
+```sh
+python3 -B experiments/preview_icl_expanded.py \
+  --review-preparation /path/to/pilot.zip --out /tmp/preparation-review
+```
+
+This flags whole-response JSON containing only empty routes and optional change
+fields during preparation. Missing responses remain visible; an unflagged answer
+is not a compliance pass. It neither changes scores nor triggers retries.
+
 ## Sequence and history
 
 Each period has preparation (except baseline), task questions, then a structured
