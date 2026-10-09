@@ -4,6 +4,8 @@
     python3 run_agentic_cost_check.py --seeds 8        # quick check on one seed (3 runs)
     python3 run_agentic_cost_check.py --mode sto       # stochastic instead of deterministic
     python3 run_agentic_cost_check.py --dry            # same flow with no API calls
+    python3 run_agentic_cost_check.py --condition redirect      # another scenario (default silent_break)
+    python3 run_agentic_cost_check.py --openrouter MODEL_ID --price-in 0.3 --price-out 1.2   # via OpenRouter
 
 What it does:
   - runs every line of RUN_DIR/queue.txt ("condition seed repeat"), creating the default
@@ -27,6 +29,7 @@ MODE = "det"                                      # the Results-tab plan starts 
 SETUP = ["--pilot-type", "active", "--mode", MODE, "--scenario", "seed7_silent_break",
          "--m0-episodes", "4", "--m1-episodes", "4", "--max-steps-per-episode", "20"]
 PRICE_IN, PRICE_OUT = 2.50, 10.00            # USD per million tokens (GPT-4o list price; check yours)
+OPENROUTER_URL = "https://openrouter.ai/api/v1"
 RUN_TIMEOUT = 3600                            # seconds per run
 # ----------------------------------------------------------------------------------
 
@@ -36,13 +39,26 @@ def _arg(name, default):
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
 SEEDS = [int(x) for x in _arg("--seeds", ",".join(map(str, SEEDS))).split(",")]
 MODE = _arg("--mode", MODE); SETUP[SETUP.index("--mode") + 1] = MODE
+SCENARIO = _arg("--condition", "silent_break")    # no_change | irrelevant | silent_break | hard_removal | redirect | degradation (sto only)
+if SCENARIO != "silent_break":
+    SETUP += ["--condition", SCENARIO]
+if SCENARIO == "no_change":     # nothing changed, so there is nothing to localize
+    SETUP += ["--probes", "detection", "preservation", "adaptation"]
+OPENROUTER = _arg("--openrouter", "")             # e.g. --openrouter deepseek/deepseek-chat
+PRICE_IN = float(_arg("--price-in", PRICE_IN)); PRICE_OUT = float(_arg("--price-out", PRICE_OUT))
 HISTORY = _arg("--history", "none")                 # ablation: retained_reports_v2 | separate_reports_post_task_v1
 MATCHED_PREP = "--matched-prep" in sys.argv          # ablation: preparation turn for every arm, as in ICL
 SWITCHES = ["--mode-prompts", "--history", HISTORY] + (["--matched-prep"] if MATCHED_PREP else [])
 RUN_DIR = os.path.join(ROOT, "runs", ("DRY_" if DRY else "") + datetime.date.today().isoformat()
                        + f"_agentic_cost_check_{MODE}_seeds{'-'.join(map(str, SEEDS))}"
-                       + ("" if HISTORY == "none" else f"_{HISTORY.split('_')[0]}") + ("_prep" if MATCHED_PREP else ""))
+                       + ("" if HISTORY == "none" else f"_{HISTORY.split('_')[0]}") + ("_prep" if MATCHED_PREP else "")
+                       + ("" if SCENARIO == "silent_break" else f"_{SCENARIO}")
+                       + (f"_{OPENROUTER.replace('/', '-')}" if OPENROUTER else ""))
 CRED = os.path.expanduser("~/.ecpm_azure.json")
+
+def openrouter_creds():
+    k = os.environ.get("OPENROUTER_API_KEY") or getpass.getpass("OpenRouter API key: ").strip()
+    return {"key": k}
 
 def creds():
     c = json.load(open(CRED)) if os.path.exists(CRED) else {}
@@ -87,12 +103,19 @@ def log(msg):
 
 def run_one(c, s, r, cr):
     t = tag(c, s, r)
-    prov = ["--provider", "dry-run"] if DRY else ["--provider", "azure", "--model", cr["deployment"], "--azure-endpoint", cr["endpoint"]]
-    if not DRY and cr["deployment"].lower().startswith(("gpt-5", "o1", "o3", "o4")):
+    if DRY:
+        prov = ["--provider", "dry-run"]
+    elif OPENROUTER:   # OpenAI-compatible endpoint, model id like "deepseek/deepseek-chat"
+        prov = ["--provider", "openai", "--base-url", OPENROUTER_URL, "--model", OPENROUTER]
+    else:
+        prov = ["--provider", "azure", "--model", cr["deployment"], "--azure-endpoint", cr["endpoint"]]
+    if not DRY and not OPENROUTER and cr["deployment"].lower().startswith(("gpt-5", "o1", "o3", "o4")):
         prov.append("--azure-reasoning-model")   # reasoning deployments need different request fields
     cmd = [sys.executable, "-B", "agentic_conditions.py", "run", c, "--repeat", str(r)] + SWITCHES + ["--"] + SETUP + \
           ["--seed", str(s), "--tag", t, "--out", RUN_DIR] + prov
     env = dict(os.environ, AZURE_OPENAI_API_KEY=cr.get("key", ""))
+    if OPENROUTER:
+        env["OPENAI_API_KEY"] = cr.get("key", "")
     with open(os.path.join(RUN_DIR, "stdout.txt"), "a") as out:
         try:
             ok = subprocess.run(cmd, cwd=ROOT, env=env, stdout=out, stderr=out, timeout=RUN_TIMEOUT).returncode == 0
@@ -107,7 +130,7 @@ def main():
     if not os.path.exists(os.path.join(ROOT, "agentic_conditions.py")):
         sys.exit("agentic_conditions.py is not in this folder. Run git pull (or use the latest main) first.")
     os.makedirs(RUN_DIR, exist_ok=True)
-    cr = {} if DRY else creds()
+    cr = {} if DRY else (openrouter_creds() if OPENROUTER else creds())
     log(f"start {'DRY ' if DRY else ''}batch in {RUN_DIR}")
     asked = DRY
     streak = 0   # consecutive failures: three in a row means a setup problem, not a bad run
