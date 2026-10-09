@@ -42,6 +42,7 @@ def load(run_dir):
             "max_tokens": (a.get("model") or {}).get("max_tokens"),
             "max_tokens_used": min((u["max_tokens_used"] for u in a.get("provider_usage_calls") or []
                                     if isinstance((u or {}).get("max_tokens_used"), int)), default=None),
+            "retried_attempts": sum(1 for u in a.get("provider_usage_calls") or [] if (u or {}).get("retried")),
             "cut_off_calls": sum(1 for u in a.get("provider_usage_calls") or [] if (u or {}).get("finish_reason") == "length"),
             "calls": tok.get("n_calls"), "input_tokens": tok.get("prompt_tokens"), "output_tokens": tok.get("completion_tokens"),
         })

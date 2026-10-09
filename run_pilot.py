@@ -92,7 +92,7 @@ from ecpm_parser import (PARSERS, belief_self_consistency,
                          score_control_preservation, score_icl_beliefs,
                          score_icl_localization, score_adaptation,
                          score_route_pre)
-from model_clients import (TransientLLMError, _is_gpt_reasoning,
+from model_clients import (TransientLLMError, _is_gpt_reasoning, RETRIED_USAGE,
                            call_anthropic, call_anthropic_chat, call_azure,
                            call_azure_chat, call_openai, call_openai_chat)
 from prompts import (ASKS_ACTIVE, ask_block, context_block, context_block_a,
@@ -1802,6 +1802,7 @@ def run_pilot_active(sc, deterministic, args):
                 'total_tokens': inp + out if inp is not None and out is not None else None,
                 'accounting_scope': 'successful_returned_calls_only'}
 
+    RETRIED_USAGE.clear()   # nothing from an earlier run in this process
     reasoning_ctl = reasoning_provenance(args)   # same validation as the ICL protocols
     control = reasoning_ctl["request_fields"]
 
@@ -1825,6 +1826,8 @@ def run_pilot_active(sc, deterministic, args):
         else:
             raise AssertionError("dry-run must not call act_fn")
         last_usage = usage
+        usage_calls.extend(RETRIED_USAGE)   # empty attempts before this reply, marked "retried"
+        RETRIED_USAGE.clear()
         usage_calls.append(usage)
         usage_totals = accumulated_usage()
         print(f"[tokens] call {usage_totals['n_calls']}: "

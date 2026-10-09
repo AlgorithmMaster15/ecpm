@@ -188,6 +188,7 @@ def call_anthropic_chat(model, system, messages, max_tokens, thinking_budget=0):
     return text, reasoning, data.get("usage", {})
 
 
+RETRIED_USAGE = []   # usage of empty replies that were retried; the agentic runner records them
 _CAPS = {}   # output cap a provider accepted, per model, learned from "too large" rejections
 _CAP_TOO_LARGE = re.compile(r"max_(completion_)?tokens|maximum[^.]{0,40}tokens|output tokens|token limit", re.I)
 _CAP_FLOOR = 1024
@@ -242,12 +243,14 @@ def call_openai_chat(model, system, messages, max_tokens, base_url, extra=None):
                      f"Bearer {os.environ['OPENAI_API_KEY']}"})
     data = _post_json(req, body, model)
     text = data["choices"][0]["message"].get("content") or ""
+    # finish_reason is kept with each call's usage, so "length" (cut off) can be told apart from "stop"
+    usage = {**(data.get("usage") or {}), "finish_reason": data["choices"][0].get("finish_reason"),
+             "max_tokens_used": body.get("max_completion_tokens", body.get("max_tokens"))}
     if not text.strip():
+        RETRIED_USAGE.append({**usage, "retried": True})   # billed even though empty: kept for the totals
         raise TransientLLMError("empty OpenAI response content (finish_reason="
                                 f"{data['choices'][0].get('finish_reason')})")
-    # finish_reason is kept with each call's usage, so "length" (cut off) can be told apart from "stop"
-    return text, {**(data.get("usage") or {}), "finish_reason": data["choices"][0].get("finish_reason"),
-                  "max_tokens_used": body.get("max_completion_tokens", body.get("max_tokens"))}
+    return text, usage
 
 
 def call_azure_chat(deployment, system, messages, max_tokens, endpoint,
@@ -272,9 +275,11 @@ def call_azure_chat(deployment, system, messages, max_tokens, endpoint,
                  "api-key": os.environ["AZURE_OPENAI_API_KEY"]})
     data = _post_json(req, body, deployment)
     text = data["choices"][0]["message"].get("content") or ""
+    # finish_reason is kept with each call's usage, so "length" (cut off) can be told apart from "stop"
+    usage = {**(data.get("usage") or {}), "finish_reason": data["choices"][0].get("finish_reason"),
+             "max_tokens_used": body.get("max_completion_tokens", body.get("max_tokens"))}
     if not text.strip():
+        RETRIED_USAGE.append({**usage, "retried": True})   # billed even though empty: kept for the totals
         raise TransientLLMError("empty Azure response content (finish_reason="
                                 f"{data['choices'][0].get('finish_reason')})")
-    # finish_reason is kept with each call's usage, so "length" (cut off) can be told apart from "stop"
-    return text, {**(data.get("usage") or {}), "finish_reason": data["choices"][0].get("finish_reason"),
-                  "max_tokens_used": body.get("max_completion_tokens", body.get("max_tokens"))}
+    return text, usage
