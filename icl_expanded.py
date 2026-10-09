@@ -21,7 +21,7 @@ import icl_preparation as preparation
 
 PROTOCOL = 'icl_expanded_v2'
 SCORER = 'icl_expanded_rows_v3'
-PREPARATION_POLICY = 'five_arms_length_target_v2'
+PREPARATION_POLICY = 'five_arms_scoped_preparation_v3'
 SCHEDULE = 'prepare_task_post_task_report_v2'
 STAGES = ('prepare', 'task', 'readout')
 CAP = 4096
@@ -87,7 +87,7 @@ def stages(arm):
     return ('task', 'readout') if arm == 'baseline_task' else STAGES
 
 
-def task_guide(period):
+def task_guide(period, preparation=False):
     text = '''Task rules and output format:
 Find the route with the smallest expected number of attempts for each requested
 start and goal. Return only a JSON object with a routes list. Each entry has
@@ -99,6 +99,13 @@ task questions.'''
         text += '''\nAlso report changed (a boolean) and changed_pair (null, or a state/action
 object identifying the changed pair). Compare the underlying systems across
 periods; different sampled fractions alone do not establish a change.'''
+    if preparation:
+        text = text.replace('Task rules and output format:',
+            'Task rules and output format:\nFor later task-answer turns only, not this preparation turn:')
+        text = text.replace('Return only a JSON object with a routes list.',
+            'On those later task-answer turns, return only a JSON object with a routes list.')
+        text = text.replace('Also report changed',
+            'On the later task-answer turn, also report changed')
     return text
 
 
@@ -228,11 +235,13 @@ def prompts(world, period, arm):
         report = report.replace('or probability differs from Period A; otherwise false.',
             'or underlying success probability differs from Period A; otherwise false.\n'
             'Different sampled estimates alone do not establish an underlying change.')
-    evidence = '\n'.join(lines) + '\n\n' + task_guide(period)
+    evidence = '\n'.join(lines) + '\n\n' + task_guide(period, preparation=arm != 'baseline_task')
     task = pilot_design.task(world, period)
     if arm == 'baseline_task':
         return {'task': evidence + '\n\n' + task, 'readout': report}
-    return {'prepare': evidence + '\n\n' + instruction, 'task': task, 'readout': report}
+    return {'prepare': evidence + '\n\nCurrent turn: preparation, not a task answer.\n'
+            'Task-answer JSON is not required on this turn.\n' + instruction,
+            'task': task, 'readout': report}
 
 
 def schedule(world, arm, answers, history_policy=pilot_design.HISTORY_POLICY):

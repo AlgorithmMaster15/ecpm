@@ -2,12 +2,14 @@
 
 import argparse
 import csv
+import hashlib
 import itertools
 import json
 import math
 import statistics
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -84,7 +86,7 @@ def plan(profile, wrappers=(), k=10, repeats=1):
 
 def dimensions(a):
     i = a['identity']
-    return {k: i[k] for k in ('protocol', 'scorer', 'schedule', 'graph_seed', 'mode', 'scenario',
+    return {k: i[k] for k in ('protocol', 'preparation_policy', 'scorer', 'schedule', 'graph_seed', 'mode', 'scenario',
         'condition', 'history_policy', 'reasoning_mode', 'profile', 'model', 'provider', 'repeat',
         'repeat_seed_label', 'implementation_commit', 'world_sha256', 'deployment_sha256')} | {
         'run_id': a['run_id'], 'synthetic': a['synthetic'], 'source_sha256': i['source_sha256'],
@@ -236,6 +238,76 @@ def summarize(paths):
             'policy': 'fresh operational audit; incompatible groups separate; saved scores unchanged; no historical rescoring'}
 
 
+def empty_task_answer_json(text):
+    """Narrow format diagnostic, not preparation scoring or a parser fallback."""
+    if not isinstance(text, str):
+        return False
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return False
+    return (isinstance(value, dict) and value.get('routes') == []
+            and set(value) <= {'routes', 'changed', 'changed_pair'})
+
+
+def review_preparation(paths):
+    """Read saved preparation text, including historical ZIPs, without rescoring."""
+    def inputs():
+        for source in map(Path, paths):
+            if source.suffix.lower() == '.zip':
+                with zipfile.ZipFile(source) as archive:
+                    for name in sorted(archive.namelist()):
+                        if Path(name).name.startswith('icl_expanded_v2_') and name.endswith('.json'):
+                            yield str(source) + ':' + name, archive.read(name)
+            else:
+                files = sorted(source.rglob('icl_expanded_v2_*.json')) if source.is_dir() else [source]
+                for path in files:
+                    yield str(path), path.read_bytes()
+
+    runs, rows, groups, seen = 0, [], {}, set()
+    for source, raw in inputs():
+        a = json.loads(raw)
+        i = a['identity']
+        if i['protocol'] != design.PROTOCOL:
+            raise ValueError('wrong protocol input')
+        if a['run_id'] in seen:
+            raise ValueError('duplicate run in preparation review')
+        seen.add(a['run_id']); runs += 1
+        key = (i['condition'], i['preparation_policy'], i['implementation_commit'])
+        group = groups.setdefault(key, dict(condition=key[0], preparation_policy=key[1],
+            implementation_commit=key[2], runs=0, completed_runs=0,
+            completed_both_empty_task_json=0, periods={p: dict(completed_responses=0,
+                completed_missing_responses=0, empty_task_json=0) for p in ('A', 'B')}))
+        completed = a['state'] == 'completed'
+        group['runs'] += 1; group['completed_runs'] += int(completed)
+        if 'prepare' not in i['stages']:
+            continue
+        flags = []
+        for period in ('A', 'B'):
+            text = a['turns'].get(period + '_prepare', {}).get('raw_response')
+            flag = empty_task_answer_json(text)
+            flags.append(flag)
+            counts = group['periods'][period]
+            if completed:
+                counts['completed_responses'] += int(isinstance(text, str))
+                counts['completed_missing_responses'] += int(not isinstance(text, str))
+                counts['empty_task_json'] += int(flag)
+            rows.append(dict(run_id=a['run_id'], condition=i['condition'],
+                graph_seed=i['graph_seed'], mode=i['mode'], scenario=i['scenario'],
+                history_policy=i['history_policy'], repeat=i['repeat'], period=period,
+                state=a['state'], preparation_policy=i['preparation_policy'],
+                status='missing' if not isinstance(text, str) else
+                    'empty_task_answer_json' if flag else 'not_flagged_not_a_compliance_pass',
+                source=source, source_sha256=hashlib.sha256(raw).hexdigest(),
+                response_sha256=hashlib.sha256(text.encode()).hexdigest() if isinstance(text, str) else None))
+        group['completed_both_empty_task_json'] += int(completed and all(flags))
+    if not any(r['response_sha256'] is not None for r in rows):
+        raise ValueError('no preparation responses examined')
+    return dict(policy='diagnostic only: whole-response JSON with empty routes and optional change fields; '
+                'not an operational audit, compliance pass, parser replacement or rescore; no retries',
+                runs=runs, groups=list(groups.values()), responses=rows)
+
+
 def coverage(out):
     out = Path(out)
     if out.exists():
@@ -307,17 +379,22 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--coverage', action='store_true')
     ap.add_argument('--summarize', nargs='+')
+    ap.add_argument('--review-preparation', nargs='+', help='read-only empty task-JSON diagnostic for saved run directories or ZIPs')
     ap.add_argument('--plan-profile', choices=tuple(design.controls.MODELS))
     ap.add_argument('--config', action='append', default=[], help='explicit non-secret expanded readiness file for a supported mode/history')
     ap.add_argument('--k', type=int, choices=design.SUPPORTED_K, default=10)
     ap.add_argument('--repeats', type=int, choices=(1, 5), default=1)
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
-    if sum(map(bool, (args.coverage, args.summarize, args.plan_profile))) != 1:
-        ap.error('choose coverage, summarize or plan-profile')
+    if sum(map(bool, (args.coverage, args.summarize, args.plan_profile, args.review_preparation))) != 1:
+        ap.error('choose coverage, summarize, plan-profile or review-preparation')
     if args.config and not args.plan_profile:
         ap.error('configs are used only for explicit provider planning')
-    if args.coverage:
+    if args.review_preparation:
+        result = review_preparation(args.review_preparation)
+        save(Path(args.out) / 'preparation_diagnostic.json', result)
+        print(json.dumps({'runs': result['runs'], 'groups': result['groups']}))
+    elif args.coverage:
         r = coverage(args.out)
         print(json.dumps({k: r[k] for k in ('worlds', 'synthetic_conversations', 'synthetic_responses', 'provider_calls')}))
     elif args.plan_profile:
