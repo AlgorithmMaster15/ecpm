@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -187,16 +188,38 @@ def call_anthropic_chat(model, system, messages, max_tokens, thinking_budget=0):
     return text, reasoning, data.get("usage", {})
 
 
-def _post_json(req):
-    """POST and decode; a 400 keeps its type (not retried) but carries the provider's reason."""
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as ex:
-        if ex.code != 400:
-            raise
-        reason = ex.read().decode(errors="replace")[:500]
-        raise urllib.error.HTTPError(ex.url, ex.code, f"{ex.msg}: {reason}", ex.headers, None) from None
+_CAPS = {}   # output cap a provider accepted, per model, learned from "too large" rejections
+_CAP_TOO_LARGE = re.compile(r"max_(completion_)?tokens|maximum[^.]{0,40}tokens|output tokens|token limit", re.I)
+_CAP_FLOOR = 1024
+# Seconds per chat request. A 16k-token reasoning answer can take minutes on a slow provider;
+# 120 s timed out and was retried from scratch. Override with ECPM_HTTP_TIMEOUT.
+CHAT_TIMEOUT = int(os.environ.get("ECPM_HTTP_TIMEOUT", "600"))
+
+
+def _post_json(req, body=None, key=None):
+    """POST and decode; a 400 keeps its type (not retried) but carries the provider's reason.
+    If the provider rejects the output cap as too large, the cap is halved (not below 1024)
+    and remembered for that model, so later calls start at the accepted value."""
+    field = next((f for f in ("max_completion_tokens", "max_tokens") if body and f in body), None)
+    if field and key in _CAPS and body[field] > _CAPS[key]:
+        body[field] = _CAPS[key]
+    while True:
+        if body is not None:   # a fresh request each attempt, so the length header matches the body
+            req = urllib.request.Request(req.full_url, data=json.dumps(body).encode(), headers={
+                k: v for k, v in req.header_items() if k.lower() != "content-length"})
+        try:
+            with urllib.request.urlopen(req, timeout=CHAT_TIMEOUT) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as ex:
+            if ex.code != 400:
+                raise
+            reason = ex.read().decode(errors="replace")[:500]
+            if field and body[field] > _CAP_FLOOR and _CAP_TOO_LARGE.search(reason):
+                body[field] = max(_CAP_FLOOR, body[field] // 2)
+                _CAPS[key] = body[field]
+                print(f"output cap rejected for {key}; retrying with {body[field]}: {reason[:160]}")
+                continue
+            raise urllib.error.HTTPError(ex.url, ex.code, f"{ex.msg}: {reason}", ex.headers, None) from None
 
 
 def call_openai_chat(model, system, messages, max_tokens, base_url, extra=None):
@@ -217,12 +240,14 @@ def call_openai_chat(model, system, messages, max_tokens, base_url, extra=None):
         headers={"content-type": "application/json",
                  "authorization":
                      f"Bearer {os.environ['OPENAI_API_KEY']}"})
-    data = _post_json(req)
+    data = _post_json(req, body, model)
     text = data["choices"][0]["message"].get("content") or ""
     if not text.strip():
         raise TransientLLMError("empty OpenAI response content (finish_reason="
                                 f"{data['choices'][0].get('finish_reason')})")
-    return text, data.get("usage", {})
+    # finish_reason is kept with each call's usage, so "length" (cut off) can be told apart from "stop"
+    return text, {**(data.get("usage") or {}), "finish_reason": data["choices"][0].get("finish_reason"),
+                  "max_tokens_used": body.get("max_completion_tokens", body.get("max_tokens"))}
 
 
 def call_azure_chat(deployment, system, messages, max_tokens, endpoint,
@@ -245,9 +270,11 @@ def call_azure_chat(deployment, system, messages, max_tokens, endpoint,
         data=json.dumps(body).encode(),
         headers={"content-type": "application/json",
                  "api-key": os.environ["AZURE_OPENAI_API_KEY"]})
-    data = _post_json(req)
+    data = _post_json(req, body, deployment)
     text = data["choices"][0]["message"].get("content") or ""
     if not text.strip():
         raise TransientLLMError("empty Azure response content (finish_reason="
                                 f"{data['choices'][0].get('finish_reason')})")
-    return text, data.get("usage", {})
+    # finish_reason is kept with each call's usage, so "length" (cut off) can be told apart from "stop"
+    return text, {**(data.get("usage") or {}), "finish_reason": data["choices"][0].get("finish_reason"),
+                  "max_tokens_used": body.get("max_completion_tokens", body.get("max_tokens"))}

@@ -21,6 +21,7 @@ All options (combine freely):
   --openrouter MODEL_ID      run through OpenRouter instead of Azure
   --price-in X --price-out Y USD per million tokens, used only when the provider reports
                       no billed cost (OpenRouter reports it, cache discounts included)
+  --max-tokens N      output cap per call, reasoning included (default 16384)
   --dry               no API calls
   --yes               skip the confirmation after the first run (for unattended loops)
 Every option is recorded in the run folder name and in each run's artifact.
@@ -56,7 +57,7 @@ DRY = "--dry" in sys.argv
 YES = "--yes" in sys.argv          # skip the one confirmation after the first run (unattended batches)
 if "--help" in sys.argv or "-h" in sys.argv:
     print(__doc__); sys.exit(0)
-VALUE_FLAGS = {"--seeds", "--mode", "--condition", "--history", "--reasoning", "--reasoning-control",
+VALUE_FLAGS = {"--seeds", "--mode", "--condition", "--history", "--reasoning", "--reasoning-control", "--max-tokens",
                "--openrouter", "--price-in", "--price-out"}
 SWITCH_FLAGS = {"--dry", "--yes", "--matched-prep", "--help", "-h"}
 _rest = sys.argv[1:]
@@ -80,6 +81,8 @@ if SCENARIO == "no_change":     # nothing changed, so there is nothing to locali
 OPENROUTER = _arg("--openrouter", "")             # e.g. --openrouter deepseek/deepseek-chat
 _price = lambda v: float(str(v).replace(",", "."))   # accept 0,0173 as typed on comma-decimal systems
 PRICE_IN = _price(_arg("--price-in", PRICE_IN)); PRICE_OUT = _price(_arg("--price-out", PRICE_OUT))
+MAX_TOKENS = _arg("--max-tokens", "16384")          # output cap per call, reasoning included
+SETUP += ["--max-tokens", MAX_TOKENS]
 HISTORY = _arg("--history", "none")                 # ablation: retained_reports_v2 | separate_reports_post_task_v1
 MATCHED_PREP = "--matched-prep" in sys.argv
 REASONING = _arg("--reasoning", "")                 # off | on; empty = model default, not controlled
@@ -134,7 +137,7 @@ def queue():
     for ln in open(q):
         p = ln.split("#")[0].split()
         if len(p) == 3: items.append((p[0], int(p[1]), int(p[2])))
-    return items
+    return list(dict.fromkeys(items))   # a line added twice is one run, not two (progress and totals)
 
 def tag(c, s, r): return f"s{s}_{c}_r{r}"
 def _artifact(t):
@@ -158,6 +161,14 @@ def run_cost(t):
         return sum(u["cost"] for u in calls), "billed"
     i, o = tokens(t)
     return i / 1e6 * PRICE_IN + o / 1e6 * PRICE_OUT, "est."
+
+def cut_off(t):
+    """Calls in a run that stopped at the output cap (finish_reason "length")."""
+    return sum(1 for u in json.load(open(_artifact(t))).get("provider_usage_calls") or []
+               if (u or {}).get("finish_reason") == "length")
+
+def usd(v):
+    return f"${v:.4f}" if 0 < v < 0.01 else f"${v:.2f}"   # sub-cent runs (cheap models) stay visible
 
 def log(msg):
     line = f"{datetime.datetime.now():%H:%M:%S} {msg}"
@@ -191,7 +202,8 @@ def run_one(c, s, r, cr):
         prov.append("--azure-reasoning-model")   # reasoning deployments need different request fields
     if REASONING and not DRY:   # dry-run sends nothing, so no control is attached
         prov += reasoning_args(cr)
-    cmd = [sys.executable, "-B", "agentic_conditions.py", "run", c, "--repeat", str(r)] + SWITCHES + ["--"] + SETUP + \
+    # -u: unbuffered, so stdout.txt shows each call as it happens (progress is visible mid-run)
+    cmd = [sys.executable, "-B", "-u", "agentic_conditions.py", "run", c, "--repeat", str(r)] + SWITCHES + ["--"] + SETUP + \
           ["--seed", str(s), "--tag", t, "--out", RUN_DIR] + prov
     env = dict(os.environ, AZURE_OPENAI_API_KEY=cr.get("key", ""))
     if OPENROUTER:
@@ -246,13 +258,14 @@ def main():
         kind = "billed" if all(k == "billed" for _, k in costs) else "est."
         ri, ro = tokens(tag(c, s, r))
         rc, rk = run_cost(tag(c, s, r))
-        log(f"done {len(fin)}/{len(queue())}  this run: in {ri:,} out {ro:,} ${rc:.2f} {rk}"
-            f"  |  total: in {ti:,} out {to:,} ${cost:.2f} {kind}")
+        log(f"done {len(fin)}/{len(queue())}  this run: in {ri:,} out {ro:,} {usd(rc)} {rk}"
+            f"  |  total: in {ti:,} out {to:,} {usd(cost)} {kind}"
+            + (f"  |  CUT OFF at the output cap: {cut_off(tag(c, s, r))} call(s)" if cut_off(tag(c, s, r)) else ""))
         if not asked:
             per = cost / len(fin); total = per * len(queue())
             drain_typeahead()   # keys typed or pasted during the run must not answer this question
-            ans = input(f"First run used {ti:,} input / {to:,} output tokens (${per:.2f} {kind}). "
-                        f"Projected for all {len(queue())} runs: ${total:.2f}. Continue? [y/N] ").strip().lower()
+            ans = input(f"First run used {ti:,} input / {to:,} output tokens ({usd(per)} {kind}). "
+                        f"Projected for all {len(queue())} runs: {usd(total)}. Continue? [y/N] ").strip().lower()
             asked = True
             if ans != "y": log("stopped after the first run, as asked"); break
     summary()
