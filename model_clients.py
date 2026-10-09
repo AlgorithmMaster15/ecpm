@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 
 
@@ -186,6 +187,18 @@ def call_anthropic_chat(model, system, messages, max_tokens, thinking_budget=0):
     return text, reasoning, data.get("usage", {})
 
 
+def _post_json(req):
+    """POST and decode; a 400 keeps its type (not retried) but carries the provider's reason."""
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as ex:
+        if ex.code != 400:
+            raise
+        reason = ex.read().decode(errors="replace")[:500]
+        raise urllib.error.HTTPError(ex.url, ex.code, f"{ex.msg}: {reason}", ex.headers, None) from None
+
+
 def call_openai_chat(model, system, messages, max_tokens, base_url, extra=None):
     full_messages = [{"role": "system", "content": system}] + list(messages)
     body = {"model": model, "messages": full_messages}
@@ -195,17 +208,20 @@ def call_openai_chat(model, system, messages, max_tokens, base_url, extra=None):
         body["max_tokens"] = max_tokens
         body["temperature"] = 0
     body.update(extra or {})   # validated provider controls, e.g. reasoning_effort
+    reasoning = (extra or {}).get("reasoning")
+    if model.startswith("anthropic/") and isinstance(reasoning, dict) and reasoning.get("enabled", True):
+        body.pop("temperature", None)   # Anthropic models reject temperature 0 while thinking is on
     req = urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions",
         data=json.dumps(body).encode(),
         headers={"content-type": "application/json",
                  "authorization":
                      f"Bearer {os.environ['OPENAI_API_KEY']}"})
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    text = data["choices"][0]["message"]["content"]
+    data = _post_json(req)
+    text = data["choices"][0]["message"].get("content") or ""
     if not text.strip():
-        raise TransientLLMError("empty OpenAI response content")
+        raise TransientLLMError("empty OpenAI response content (finish_reason="
+                                f"{data['choices'][0].get('finish_reason')})")
     return text, data.get("usage", {})
 
 
@@ -229,9 +245,9 @@ def call_azure_chat(deployment, system, messages, max_tokens, endpoint,
         data=json.dumps(body).encode(),
         headers={"content-type": "application/json",
                  "api-key": os.environ["AZURE_OPENAI_API_KEY"]})
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    text = data["choices"][0]["message"]["content"]
+    data = _post_json(req)
+    text = data["choices"][0]["message"].get("content") or ""
     if not text.strip():
-        raise TransientLLMError("empty Azure response content")
+        raise TransientLLMError("empty Azure response content (finish_reason="
+                                f"{data['choices'][0].get('finish_reason')})")
     return text, data.get("usage", {})
