@@ -57,11 +57,18 @@ def conditions_for(deterministic):
             if not (c == "degradation" and deterministic)]
 
 
+# Graph family (--n-nodes / --extra-edges). Empty keeps the eight-node
+# default, so the eight-node output is unchanged. Extra links per family size
+# follow run_pilot.FAMILY_EXTRA_EDGES: 6 for eight nodes, 20 for sixteen.
+FAMILY = {}
+FAMILY_EXTRA_EDGES = {8: 6, 16: 20}
+
+
 def audit_one(seed, condition, deterministic):
     """One (seed, condition) cell against the three criteria."""
     try:
         inst = R.make_pair(seed, condition, deterministic=deterministic,
-                           matched=True)
+                           matched=True, **FAMILY)
     except Exception as exc:
         return {"status": "not_built", "reason": str(exc)[:120]}
 
@@ -135,7 +142,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", default="1-30")
     ap.add_argument("--json", default="runs/seed_eligibility.json")
+    ap.add_argument("--n-nodes", type=int, default=None,
+                    help="graph family size (default: the generator's 8)")
+    ap.add_argument("--extra-edges", type=int, default=None,
+                    help="extra links (default: 6 for 8 nodes, 20 for 16 "
+                         "nodes)")
     args = ap.parse_args()
+    if args.n_nodes is not None or args.extra_edges is not None:
+        n = 8 if args.n_nodes is None else args.n_nodes
+        extra = args.extra_edges
+        if extra is None:
+            if n not in FAMILY_EXTRA_EDGES:
+                ap.error(f"--n-nodes {n} has no default extra-edge count; "
+                         f"pass --extra-edges")
+            extra = FAMILY_EXTRA_EDGES[n]
+        FAMILY.update(n_nodes=n, extra_edges=extra)
 
     seeds = parse_seeds(args.seeds)
     cells, summary = {}, {}
@@ -201,6 +222,7 @@ def main():
     os.makedirs(os.path.dirname(args.json) or ".", exist_ok=True)
     with open(args.json, "w") as fh:
         json.dump({
+            **({"family": dict(FAMILY)} if FAMILY else {}),
             "criteria": {
                 "1": "goal reachable under every scenario",
                 "2": "controls leave the optimal route untouched; "
