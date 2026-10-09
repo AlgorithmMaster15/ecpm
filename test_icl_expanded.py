@@ -590,9 +590,13 @@ class PreparationScope(unittest.TestCase):
                 self.assert_scoped(x.prompts(w, 'A', 'model_first')['prepare'], 'A')
 
     def test_only_preparation_text_and_policy_change_from_published_source(self):
-        source = subprocess.check_output(['git', 'show',
-            '96cdd374b1d9acceb30096de4df929bb8cdabe34:icl_expanded.py'],
-            cwd=Path(x.__file__).parent, text=True)
+        try:
+            source = subprocess.check_output(['git', 'show',
+                '96cdd374b1d9acceb30096de4df929bb8cdabe34:icl_expanded.py'],
+                cwd=Path(x.__file__).parent, text=True, stderr=subprocess.DEVNULL)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # Zip downloads and shallow clones lack this commit; CI checks out full history.
+            self.skipTest('needs git history containing 96cdd374b1d9 (published v2 source)')
         prior = types.ModuleType('published_expanded_scope_reference')
         exec(compile(source, '<published expanded source>', 'exec'), prior.__dict__)
         def unchanged_nodes(text):
