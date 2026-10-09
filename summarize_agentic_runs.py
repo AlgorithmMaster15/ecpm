@@ -10,7 +10,7 @@ import csv, glob, json, os, statistics as st, sys
 
 def load(run_dir):
     rows = []
-    for meta_p in sorted(glob.glob(os.path.join(run_dir, "*", "condition.json"))):
+    for meta_p in sorted(glob.glob(os.path.join(run_dir, "**", "condition.json"), recursive=True)):
         d = os.path.dirname(meta_p)
         arts = glob.glob(os.path.join(d, "pilot_*.json"))
         if not arts:
@@ -49,14 +49,8 @@ def agg(vals):
     f = (lambda x: f"{x:,.0f}") if min(xs) >= 100 else (lambda x: f"{x:.2f}")
     return f(st.mean(xs)) if len(xs) == 1 else f"{f(st.mean(xs))} ± {f(st.stdev(xs))}"
 
-def main(run_dir):
-    rows = load(run_dir)
-    if not rows:
-        sys.exit("no runs found (expected */condition.json and */pilot_*.json)")
-    for r in rows:
-        r["cost_usd"] = round((r["input_tokens"] or 0) / 1e6 * PRICE_IN + (r["output_tokens"] or 0) / 1e6 * PRICE_OUT, 4)
-    with open(os.path.join(run_dir, "agentic_runs.csv"), "w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+def tables(rows):
+    lines = []
     arms = [a for a in ("task_only", "model_first", "graph_given") if any(r["arm"] == a for r in rows)]
     by = {a: [r for r in rows if r["arm"] == a] for a in arms}
     metrics = [("Runs (seeds)", None), ("Goal success M1", "goal_success_m1"), ("Mean steps M0", "steps_m0"),
@@ -66,7 +60,7 @@ def main(run_dir):
                ("Localization correct", "localization"), ("Preservation accuracy", "preservation"),
                ("Route probe optimal", "route_probe_optimal"), ("Input tokens", "input_tokens"),
                ("Output tokens", "output_tokens"), ("Cost per run (USD)", "cost_usd")]
-    lines = ["| Metric | " + " | ".join(arms) + " |", "|---|" + "---|" * len(arms)]
+    lines += ["| Metric | " + " | ".join(arms) + " |", "|---|" + "---|" * len(arms)]
     for label, key in metrics:
         if key is None:
             cells = [f"{len(by[a])} ({', '.join(str(r['seed']) for r in by[a])})" for a in arms]
@@ -82,6 +76,23 @@ def main(run_dir):
         sub = {a: [r for r in by[a] if r["exposed"] is True] for a in arms}
         cells = [str(len(sub[a])) if key is None else agg(r[key] for r in sub[a]) for a in arms]
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    return lines
+
+def main(run_dir):
+    rows = load(run_dir)
+    if not rows:
+        sys.exit("no runs found (expected */condition.json and */pilot_*.json)")
+    for r in rows:
+        r["cost_usd"] = round((r["input_tokens"] or 0) / 1e6 * PRICE_IN + (r["output_tokens"] or 0) / 1e6 * PRICE_OUT, 4)
+    with open(os.path.join(run_dir, "agentic_runs.csv"), "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+    lines = []
+    scenarios = sorted({r["scenario"] for r in rows})
+    for sc in scenarios:
+        sub = [r for r in rows if r["scenario"] == sc]
+        if len(scenarios) > 1:
+            lines += [f"### {sc} ({len(sub)} runs)", ""]
+        lines += tables(sub) + [""]
     out = os.path.join(run_dir, "agentic_summary.md")
     open(out, "w", encoding="utf-8").write("\n".join(lines) + "\n")
     try:
