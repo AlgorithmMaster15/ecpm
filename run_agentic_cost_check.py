@@ -21,7 +21,7 @@ All options (combine freely):
   --openrouter MODEL_ID      run through OpenRouter instead of Azure
   --price-in X --price-out Y USD per million tokens, used only when the provider reports
                       no billed cost (OpenRouter reports it, cache discounts included)
-  --max-tokens N      output cap per call, reasoning included (default 16384)
+  --max-tokens N      output cap per call, reasoning included (default 32768)
   --dry               no API calls
   --yes               skip the confirmation after the first run (for unattended loops)
 Every option is recorded in the run folder name and in each run's artifact.
@@ -49,7 +49,7 @@ SETUP = ["--pilot-type", "active", "--mode", MODE, "--scenario", "seed7_silent_b
          "--m0-episodes", "4", "--m1-episodes", "4", "--max-steps-per-episode", "20"]
 PRICE_IN, PRICE_OUT = 2.50, 10.00            # USD per million tokens (GPT-4o list price; check yours)
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
-RUN_TIMEOUT = 3600                            # seconds per run
+RUN_TIMEOUT = 10800                           # seconds per run (several long reasoning calls fit)
 # ----------------------------------------------------------------------------------
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -81,7 +81,7 @@ if SCENARIO == "no_change":     # nothing changed, so there is nothing to locali
 OPENROUTER = _arg("--openrouter", "")             # e.g. --openrouter deepseek/deepseek-chat
 _price = lambda v: float(str(v).replace(",", "."))   # accept 0,0173 as typed on comma-decimal systems
 PRICE_IN = _price(_arg("--price-in", PRICE_IN)); PRICE_OUT = _price(_arg("--price-out", PRICE_OUT))
-MAX_TOKENS = _arg("--max-tokens", "16384")          # output cap per call, reasoning included
+MAX_TOKENS = _arg("--max-tokens", "32768")          # output cap per call, reasoning included
 SETUP += ["--max-tokens", MAX_TOKENS]
 HISTORY = _arg("--history", "none")                 # ablation: retained_reports_v2 | separate_reports_post_task_v1
 MATCHED_PREP = "--matched-prep" in sys.argv

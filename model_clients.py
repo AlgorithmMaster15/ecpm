@@ -199,8 +199,10 @@ CHAT_TIMEOUT = int(os.environ.get("ECPM_HTTP_TIMEOUT", "600"))
 
 def _post_json(req, body=None, key=None):
     """POST and decode; a 400 keeps its type (not retried) but carries the provider's reason.
-    If the provider rejects the output cap as too large, the cap is halved (not below 1024)
-    and remembered for that model, so later calls start at the accepted value."""
+    If the provider rejects the output cap as too large, the cap drops to the largest smaller
+    number its message states (e.g. "maximum allowed is 8192"), or is halved when it states none,
+    not below 1024; it is remembered for that model, so later calls start at the accepted value.
+    The timeout grows with the cap, since a long answer takes minutes on a slow provider."""
     field = next((f for f in ("max_completion_tokens", "max_tokens") if body and f in body), None)
     if field and key in _CAPS and body[field] > _CAPS[key]:
         body[field] = _CAPS[key]
@@ -209,14 +211,17 @@ def _post_json(req, body=None, key=None):
             req = urllib.request.Request(req.full_url, data=json.dumps(body).encode(), headers={
                 k: v for k, v in req.header_items() if k.lower() != "content-length"})
         try:
-            with urllib.request.urlopen(req, timeout=CHAT_TIMEOUT) as resp:
+            cap = body[field] if field else 0
+            with urllib.request.urlopen(req, timeout=max(CHAT_TIMEOUT, 60 + cap // 20)) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as ex:
             if ex.code != 400:
                 raise
             reason = ex.read().decode(errors="replace")[:500]
-            if field and body[field] > _CAP_FLOOR and _CAP_TOO_LARGE.search(reason):
-                body[field] = max(_CAP_FLOOR, body[field] // 2)
+            stated = [int(n) for n in re.findall(r"\d+", reason) if int(n) < (body[field] if field else 0)]
+            if field and body[field] > _CAP_FLOOR and _CAP_TOO_LARGE.search(reason) \
+                    and not (stated and max(stated) < _CAP_FLOOR):   # a stated limit under the floor: stop
+                body[field] = max(max(stated), _CAP_FLOOR) if stated else max(_CAP_FLOOR, body[field] // 2)
                 _CAPS[key] = body[field]
                 print(f"output cap rejected for {key}; retrying with {body[field]}: {reason[:160]}")
                 continue
