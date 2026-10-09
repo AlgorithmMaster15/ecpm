@@ -899,9 +899,9 @@ def sampling_seed_provenance(args, sampling_seed):
 
 def reasoning_provenance(args):
     """Validate and record an explicit provider-specific reasoning control."""
-    mode = args.reasoning_mode
-    raw = args.reasoning_control_json
-    source = (args.reasoning_control_source or "").strip()
+    mode = getattr(args, "reasoning_mode", "unspecified")
+    raw = getattr(args, "reasoning_control_json", None)
+    source = (getattr(args, "reasoning_control_source", None) or "").strip()
     if args.provider == "dry-run":
         if raw or source:
             raise ValueError("dry-run does not send a reasoning control")
@@ -1802,6 +1802,9 @@ def run_pilot_active(sc, deterministic, args):
                 'total_tokens': inp + out if inp is not None and out is not None else None,
                 'accounting_scope': 'successful_returned_calls_only'}
 
+    reasoning_ctl = reasoning_provenance(args)   # same validation as the ICL protocols
+    control = reasoning_ctl["request_fields"]
+
     def act_fn(system, messages):
         nonlocal last_usage  # so the caller can read usage after the call, since only (text, reasoning) is returned
         reasoning = ""
@@ -1813,11 +1816,12 @@ def run_pilot_active(sc, deterministic, args):
             text, usage = with_retry(call_azure_chat, args.model, system,
                                      messages, args.max_tokens,
                                      args.azure_endpoint, args.api_version,
-                                     reasoning=args.azure_reasoning_model)
+                                     reasoning=args.azure_reasoning_model,
+                                     extra=control)
         elif args.provider == "openai":
             text, usage = with_retry(call_openai_chat, args.model, system,
                                      messages, args.max_tokens,
-                                     args.base_url)
+                                     args.base_url, extra=control)
         else:
             raise AssertionError("dry-run must not call act_fn")
         last_usage = usage
@@ -1901,6 +1905,12 @@ def run_pilot_active(sc, deterministic, args):
         }
     artifact["provider_usage_calls"] = usage_calls
     artifact["token_usage_total"] = accumulated_usage()
+    reasoning_tokens = sum(int(((u or {}).get("completion_tokens_details") or {})
+                               .get("reasoning_tokens") or 0) for u in usage_calls)
+    artifact["reasoning_control"] = {
+        **reasoning_ctl, "reasoning_tokens_total": reasoning_tokens,
+        # an "off" run that still produced reasoning tokens did not get the control it asked for
+        "violation": reasoning_ctl["mode"] == "off" and reasoning_tokens > 0}
     return artifact
 
 
@@ -2030,8 +2040,12 @@ def main():
     if args.pilot_type == 'active':
         if args.history_policy is not None:
             ap.error('active A-report history policies are not implemented; no run started')
-        if args.reasoning_mode != 'unspecified':
-            ap.error('active --reasoning-mode has no verified OFF/ON control; no run started')
+        # --reasoning-mode is applied to every agentic call (run_pilot_active) and checked against
+        # reasoning tokens; a bare mode without an explicit provider control is still refused.
+        if args.reasoning_mode != 'unspecified' and not (
+                args.reasoning_control_json and args.reasoning_control_source):
+            ap.error('active --reasoning-mode needs --reasoning-control-json and '
+                     '--reasoning-control-source; no run started')
     if args.history_policy is None:
         args.history_policy = 'retained_reports_v2'
 

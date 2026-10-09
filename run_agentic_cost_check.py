@@ -6,6 +6,22 @@
     python3 run_agentic_cost_check.py --dry            # same flow with no API calls
     python3 run_agentic_cost_check.py --condition redirect      # another scenario (default silent_break)
     python3 run_agentic_cost_check.py --openrouter MODEL_ID --price-in 0.3 --price-out 1.2   # via OpenRouter
+    python3 run_agentic_cost_check.py --reasoning off   # or on; omitted = model default (not controlled)
+    python3 run_agentic_cost_check.py --help            # this text
+
+All options (combine freely):
+  --seeds 8,13        graphs (default 8,13,25,0,1)
+  --mode det|sto      deterministic or stochastic world (default det)
+  --condition NAME    no_change | irrelevant | silent_break | hard_removal | redirect | degradation (sto only)
+  --history NAME      none | retained_reports_v2 | separate_reports_post_task_v1 (default none)
+  --matched-prep      preparation turn for every arm, as in ICL
+  --reasoning off|on  sends an explicit control: Azure reasoning_effort none/medium,
+                      OpenRouter reasoning {enabled: false} / {effort: medium}
+  --reasoning-control JSON   override that control, e.g. '{"reasoning_effort": "low"}'
+  --openrouter MODEL_ID      run through OpenRouter instead of Azure
+  --price-in X --price-out Y USD per million tokens, for the cost line
+  --dry               no API calls
+Every option is recorded in the run folder name and in each run's artifact.
 
 What it does:
   - runs every line of RUN_DIR/queue.txt ("condition seed repeat"), creating the default
@@ -35,6 +51,8 @@ RUN_TIMEOUT = 3600                            # seconds per run
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DRY = "--dry" in sys.argv
+if "--help" in sys.argv or "-h" in sys.argv:
+    print(__doc__); sys.exit(0)
 def _arg(name, default):
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
 SEEDS = [int(x) for x in _arg("--seeds", ",".join(map(str, SEEDS))).split(",")]
@@ -47,13 +65,18 @@ if SCENARIO == "no_change":     # nothing changed, so there is nothing to locali
 OPENROUTER = _arg("--openrouter", "")             # e.g. --openrouter deepseek/deepseek-chat
 PRICE_IN = float(_arg("--price-in", PRICE_IN)); PRICE_OUT = float(_arg("--price-out", PRICE_OUT))
 HISTORY = _arg("--history", "none")                 # ablation: retained_reports_v2 | separate_reports_post_task_v1
-MATCHED_PREP = "--matched-prep" in sys.argv          # ablation: preparation turn for every arm, as in ICL
+MATCHED_PREP = "--matched-prep" in sys.argv
+REASONING = _arg("--reasoning", "")                 # off | on; empty = model default, not controlled
+REASONING_CONTROL = _arg("--reasoning-control", "")  # JSON override of the default control
+if REASONING not in ("", "off", "on"):
+    sys.exit("--reasoning must be off or on")          # ablation: preparation turn for every arm, as in ICL
 SWITCHES = ["--mode-prompts", "--history", HISTORY] + (["--matched-prep"] if MATCHED_PREP else [])
 RUN_DIR = os.path.join(ROOT, "runs", ("DRY_" if DRY else "") + datetime.date.today().isoformat()
                        + f"_agentic_cost_check_{MODE}_seeds{'-'.join(map(str, SEEDS))}"
                        + ("" if HISTORY == "none" else f"_{HISTORY.split('_')[0]}") + ("_prep" if MATCHED_PREP else "")
                        + ("" if SCENARIO == "silent_break" else f"_{SCENARIO}")
-                       + (f"_{OPENROUTER.replace('/', '-')}" if OPENROUTER else ""))
+                       + (f"_{OPENROUTER.replace('/', '-')}" if OPENROUTER else "")
+                       + (f"_reasoning-{REASONING}" if REASONING else ""))
 CRED = os.path.expanduser("~/.ecpm_azure.json")
 
 def openrouter_creds():
@@ -101,6 +124,21 @@ def log(msg):
     print(line, flush=True)
     with open(os.path.join(RUN_DIR, "log.txt"), "a") as fh: fh.write(line + "\n")
 
+def reasoning_args(cr):
+    """run_pilot flags for an explicit reasoning control (validated again by run_pilot)."""
+    if REASONING_CONTROL:
+        control, source = json.loads(REASONING_CONTROL), "operator override via --reasoning-control"
+    elif OPENROUTER:
+        control = {"reasoning": {"enabled": False}} if REASONING == "off" else {"reasoning": {"effort": "medium"}}
+        source = "OpenRouter unified reasoning parameter; check reasoning_tokens_total in the artifact"
+    else:
+        if not cr["deployment"].lower().startswith(("gpt-5", "o1", "o3", "o4")):
+            sys.exit(f"{cr['deployment']} has no reasoning control; drop --reasoning or use a reasoning model")
+        control = {"reasoning_effort": "none" if REASONING == "off" else "medium"}
+        source = "Azure reasoning_effort; none gave 0 reasoning tokens on gpt-5.6-sol (ICL checks, 9 Oct)"
+    return ["--reasoning-mode", REASONING, "--reasoning-control-json", json.dumps(control),
+            "--reasoning-control-source", source]
+
 def run_one(c, s, r, cr):
     t = tag(c, s, r)
     if DRY:
@@ -111,6 +149,8 @@ def run_one(c, s, r, cr):
         prov = ["--provider", "azure", "--model", cr["deployment"], "--azure-endpoint", cr["endpoint"]]
     if not DRY and not OPENROUTER and cr["deployment"].lower().startswith(("gpt-5", "o1", "o3", "o4")):
         prov.append("--azure-reasoning-model")   # reasoning deployments need different request fields
+    if REASONING and not DRY:   # dry-run sends nothing, so no control is attached
+        prov += reasoning_args(cr)
     cmd = [sys.executable, "-B", "agentic_conditions.py", "run", c, "--repeat", str(r)] + SWITCHES + ["--"] + SETUP + \
           ["--seed", str(s), "--tag", t, "--out", RUN_DIR] + prov
     env = dict(os.environ, AZURE_OPENAI_API_KEY=cr.get("key", ""))

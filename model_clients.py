@@ -185,7 +185,7 @@ def call_anthropic_chat(model, system, messages, max_tokens, thinking_budget=0):
     return text, reasoning, data.get("usage", {})
 
 
-def call_openai_chat(model, system, messages, max_tokens, base_url):
+def call_openai_chat(model, system, messages, max_tokens, base_url, extra=None):
     full_messages = [{"role": "system", "content": system}] + list(messages)
     body = {"model": model, "messages": full_messages}
     if _is_gpt_reasoning(model):
@@ -193,6 +193,7 @@ def call_openai_chat(model, system, messages, max_tokens, base_url):
     else:
         body["max_tokens"] = max_tokens
         body["temperature"] = 0
+    body.update(extra or {})   # validated provider controls, e.g. reasoning_effort
     req = urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions",
         data=json.dumps(body).encode(),
@@ -208,7 +209,7 @@ def call_openai_chat(model, system, messages, max_tokens, base_url):
 
 
 def call_azure_chat(deployment, system, messages, max_tokens, endpoint,
-                    api_version, reasoning=False):
+                    api_version, reasoning=False, extra=None):
     """`deployment` is the Azure-side deployment name; pass
     `reasoning=True` explicitly (run_pilot.py's --azure-reasoning-model
     flag) when the deployment is a GPT reasoning model."""
@@ -221,6 +222,7 @@ def call_azure_chat(deployment, system, messages, max_tokens, endpoint,
     else:
         body["max_tokens"] = max_tokens
         body["temperature"] = 0
+    body.update(extra or {})   # validated provider controls, e.g. reasoning_effort
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
