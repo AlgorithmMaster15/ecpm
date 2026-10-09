@@ -33,6 +33,9 @@ def load(run_dir):
             "detection": sc("detection").get("correct"), "localization": sc("localization").get("correct"),
             "preservation": sc("preservation").get("accuracy"),
             "route_probe_optimal": (sc("adaptation").get("regret") == 0) if "regret" in sc("adaptation") else None,
+            "reasoning": (a.get("reasoning_control") or {}).get("mode", "unrecorded"),
+            "reasoning_tokens": (a.get("reasoning_control") or {}).get("reasoning_tokens_total"),
+            "reasoning_violation": (a.get("reasoning_control") or {}).get("violation"),
             "calls": tok.get("n_calls"), "input_tokens": tok.get("prompt_tokens"), "output_tokens": tok.get("completion_tokens"),
         })
     return rows
@@ -87,11 +90,13 @@ def main(run_dir):
     with open(os.path.join(run_dir, "agentic_runs.csv"), "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
     lines = []
-    scenarios = sorted({r["scenario"] for r in rows})
-    for sc in scenarios:
-        sub = [r for r in rows if r["scenario"] == sc]
-        if len(scenarios) > 1:
-            lines += [f"### {sc} ({len(sub)} runs)", ""]
+    # one table set per combination of the settings that vary across the folder
+    keys = [k for k in ("scenario", "mode", "model", "reasoning", "history") if len({r[k] for r in rows}) > 1]
+    groups = sorted({tuple(r[k] for k in keys) for r in rows})
+    for g in groups:
+        sub = [r for r in rows if tuple(r[k] for k in keys) == g]
+        if keys:
+            lines += [f"### {' · '.join(f'{k} {v}' for k, v in zip(keys, g))} ({len(sub)} runs)", ""]
         lines += tables(sub) + [""]
     out = os.path.join(run_dir, "agentic_summary.md")
     open(out, "w", encoding="utf-8").write("\n".join(lines) + "\n")
