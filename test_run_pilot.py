@@ -806,6 +806,213 @@ def test_main_graph_level_set_keeps_rotation_and_protocol():
     print("PASS main graph-level path preserves protocol, prompts and rotation")
 
 
+
+# ---------------------------------------------------------------- H4 measure, graph family, references
+import glob, subprocess, sys
+import explore_metrics
+from resource_mdp import make_pair
+
+
+def check(name, cond, detail=""):
+    assert cond, f"FAIL {name}: {detail}"
+
+
+def _run_py(args):
+    return subprocess.run([sys.executable, "-B"] + args, cwd=os.path.dirname(os.path.abspath(__file__)),
+                          capture_output=True, text=True)
+
+
+class Step:
+    def __init__(self, node, chosen, success, status="ok"):
+        self.node, self.chosen, self.success = node, chosen, success
+        self.parse_status = status
+
+
+class Ep:
+    def __init__(self, steps):
+        self.steps = steps
+
+
+def h4_inst(edge=("B", "F")):
+    class I:
+        change = {"edge": edge}
+    return I()
+
+
+def test_h4_measure():
+    u, v = "B", "F"
+    fail = Step(u, v, False)
+    other = Step(u, "E", True)
+    m1 = [Ep([fail] * 6 + [other, fail]), Ep([other])]
+    out = explore_metrics.choices_after_consecutive_failures(h4_inst(), [], m1)
+    check("H4: threshold reached at the sixth failure, choices counted after",
+          out["reached_in_m1"] and out["reached_at_m1_step"] == 5
+          and out["decisions_at_source"] == 3 and out["broken_choices"] == 1
+          and out["chose_again"] is True and out["n_failures"] == 6, str(out))
+    out5 = explore_metrics.choices_after_consecutive_failures(
+        h4_inst(), [], [Ep([fail] * 5 + [other])])
+    check("H4: five failures do not qualify the run",
+          out5["reached_in_m1"] is False and out5["chose_again"] is None
+          and out5["decisions_at_source"] is None)
+    carry = explore_metrics.choices_after_consecutive_failures(
+        h4_inst(), [Ep([Step(u, v, False)] * 2)], [Ep([fail] * 4 + [other])])
+    check("H4: the run of failures carries over from M0",
+          carry["reached_in_m1"] and carry["chose_again"] is False)
+    reset = explore_metrics.choices_after_consecutive_failures(
+        h4_inst(), [Ep([Step(u, v, False)] * 2 + [Step(u, v, True)])],
+        [Ep([fail] * 4 + [other])])
+    check("H4: a success of the link resets the run",
+          reset["reached_in_m1"] is False)
+    aborts = explore_metrics.choices_after_consecutive_failures(
+        h4_inst(), [], [Ep([fail] * 6 + [Step(u, "", False, "retries_exhausted"),
+                                        Step(u, "", False, "illegal_action"),
+                                        other])])
+    check("H4: parsing aborts are not decisions; unknown actions are",
+          aborts["decisions_at_source"] == 2 and aborts["broken_choices"] == 0
+          and aborts["chose_again"] is False, str(aborts))
+    m0_only = explore_metrics.choices_after_consecutive_failures(
+        h4_inst(), [Ep([fail] * 7)], [Ep([other])])
+    check("H4: a threshold reached in M0 alone does not qualify the run",
+          m0_only["reached_in_m1"] is False)
+    check("H4: no edited link, no measure",
+          explore_metrics.choices_after_consecutive_failures(h4_inst(None), [], m1) is None)
+    # Defect: a threshold one lower counts the sixth failure as a later choice.
+    damaged = explore_metrics.choices_after_consecutive_failures(h4_inst(), [], m1,
+                                                    n_failures=5)
+    check("defect caught (threshold off by one) by the decision count",
+          damaged["decisions_at_source"] != 3)
+
+
+def test_h4_in_every_agentic_artifact():
+    tmp = tempfile.mkdtemp()
+    """compute_explore_metrics carries the measure, so every agentic
+    artifact (run_pilot --pilot-type active, agentic_conditions) has it."""
+    inst = make_pair(7, "no_change", matched=True)
+    m = explore_metrics.compute_explore_metrics(inst, [], [])
+    check("metrics: the measure is present and None without an edited link",
+          "choices_after_consecutive_failures" in m
+          and m["choices_after_consecutive_failures"] is None)
+    out = os.path.join(tmp, "act")
+    r = _run_py(["run_pilot.py", "--pilot-type", "active", "--mode", "sto",
+             "--condition", "silent_break", "--seed", "7",
+             "--m0-episodes", "1", "--m1-episodes", "2",
+             "--max-steps-per-episode", "8", "--tag", "t", "--out", out])
+    check("active dry run exits 0", r.returncode == 0, r.stderr[-400:])
+    art = json.load(open(glob.glob(os.path.join(out, "t", "*.json"))[0]))
+    h4 = art["explore"]["metrics"].get("choices_after_consecutive_failures")
+    check("active artifact records the H4 measure",
+          isinstance(h4, dict) and h4["version"] == "consecutive_failures_v1"
+          and h4["n_failures"] == 6, str(h4))
+    check("active artifact without the family flags has no family field",
+          "family" not in art["instance"])
+
+
+# ----------------------------------------------------------- graph family
+def test_family_helpers():
+    check("family: no flag keeps the generator default",
+          run_pilot.family_of() == {})
+    check("family: sixteen nodes take 20 extra links",
+          run_pilot.family_of(16) == {"n_nodes": 16, "extra_edges": 20})
+    check("family: extra links alone keep eight nodes",
+          run_pilot.family_of(None, 10) == {"n_nodes": 8, "extra_edges": 10})
+    try:
+        run_pilot.family_of(12)
+        raised = False
+    except SystemExit:
+        raised = True
+    check("family: a size without a default extra-link count must name it",
+          raised)
+    sc = dict(run_pilot.SCENARIO_DEFAULTS, seed=33, condition="silent_break")
+    default = run_pilot.build_record(sc, False)
+    plain = run_pilot.pair_to_json(make_pair(33, "silent_break", matched=True))
+    check("family: the default record is the generator's eight-node pair",
+          default["world_pre"] == json.loads(json.dumps(plain["world_pre"])))
+    big = run_pilot.build_record(dict(sc, family=run_pilot.family_of(16)), False)
+    nodes = {e["from"] for e in big["world_pre"]["edges"]} | \
+        {e["to"] for e in big["world_pre"]["edges"]}
+    check("family: --n-nodes 16 builds sixteen-node worlds", len(nodes) == 16,
+          str(sorted(nodes)))
+    check("family: the deterministic gate is unchanged by default",
+          run_pilot.deterministic_gate(8)["eligible"]
+          and not run_pilot.deterministic_gate(1)["eligible"])
+    fam = run_pilot.family_of(16)
+    g16 = run_pilot.deterministic_gate(33, fam)
+    inst16 = make_pair(33, "silent_break", deterministic=True, matched=True,
+                       **fam)
+    check("family: the deterministic gate takes the family",
+          g16["target"] == {"node": inst16.change["edge"][0],
+                            "action": inst16.change["action"],
+                            "destination": inst16.change["edge"][1]}
+          and g16["pre_route"] == inst16.oracle["pre"]["optimal_route"],
+          str(g16))
+
+
+def test_family_cli():
+    tmp = tempfile.mkdtemp()
+    out = os.path.join(tmp, "fam")
+    r = _run_py(["run_pilot.py", "--condition", "silent_break", "--seed", "33",
+             "--mode", "sto", "--n-nodes", "16", "--tag", "p", "--out", out])
+    check("passive dry run with --n-nodes 16 exits 0", r.returncode == 0,
+          r.stderr[-400:])
+    art = json.load(open(glob.glob(os.path.join(out, "p", "*.json"))[0]))
+    want = {"n_nodes": 16, "extra_edges": 20}
+    check("passive artifact records the family",
+          art["scenario"].get("family") == want
+          and art["instance"].get("family") == want, str(art["instance"]))
+    r = _run_py(["run_pilot.py", "--pilot-type", "active", "--mode", "sto",
+             "--condition", "silent_break", "--seed", "33", "--n-nodes", "16",
+             "--m0-episodes", "1", "--m1-episodes", "1",
+             "--max-steps-per-episode", "6", "--tag", "a", "--out", out])
+    check("active dry run with --n-nodes 16 exits 0", r.returncode == 0,
+          r.stderr[-400:])
+    art = json.load(open(glob.glob(os.path.join(out, "a", "*.json"))[0]))
+    check("active artifact records the family",
+          art["instance"].get("family") == want, str(art["instance"]))
+    r = _run_py(["run_pilot.py", "--condition", "silent_break", "--seed", "33",
+             "--mode", "sto", "--tag", "d", "--out", out])
+    art = json.load(open(glob.glob(os.path.join(out, "d", "*.json"))[0]))
+    check("passive artifact without the flags has no family field",
+          r.returncode == 0 and "family" not in art["scenario"]
+          and "family" not in art["instance"])
+    r = _run_py(["run_pilot.py", "--protocol", "icl_graph_availability_v1",
+             "--n-nodes", "16", "--out", out])
+    check("a protocol that builds its own worlds refuses the family flags",
+          r.returncode == 2 and "no run started" in r.stderr, r.stderr[-300:])
+
+
+def test_seed_eligibility_family():
+    tmp = tempfile.mkdtemp()
+    path = os.path.join(tmp, "elig16.json")
+    r = _run_py(["experiments/seed_eligibility.py", "--seeds", "31-36",
+             "--n-nodes", "16", "--json", path])
+    check("seed_eligibility --n-nodes 16 exits 0", r.returncode == 0,
+          r.stderr[-300:])
+    got = json.load(open(path))
+    check("seed_eligibility records the family",
+          got.get("family") == {"n_nodes": 16, "extra_edges": 20},
+          str(got.get("family")))
+    path8 = os.path.join(tmp, "elig8.json")
+    r = _run_py(["experiments/seed_eligibility.py", "--seeds", "31-36",
+             "--json", path8])
+    check("seed_eligibility without the flags has no family field",
+          r.returncode == 0 and "family" not in json.load(open(path8)))
+
+
+def test_references():
+    tmp = tempfile.mkdtemp()
+    outs = []
+    for i in (1, 2):
+        p = os.path.join(tmp, f"refs_{i}.json")
+        r = _run_py(["experiments/baseline_k_sweep.py", "--references", "--seeds", "31-40",
+                     "--k", "10", "--modes", "sto", "--json", p])
+        check(f"references run {i} exits 0", r.returncode == 0, r.stderr[-300:])
+        outs.append(open(p, "rb").read())
+    check("references: two runs on the same seeds write the same bytes", outs[0] == outs[1])
+    data = json.loads(outs[0])
+    check("references: rows carry the four references",
+          data["rows"] and all({"rate", "transition", "bayes", "generator"} <= set(r) for r in data["rows"]))
+
+
 if __name__ == "__main__":
     test_legacy_prompt_and_scorer_regression()
     test_levels_share_visible_evidence_and_raw_order()
@@ -824,4 +1031,10 @@ if __name__ == "__main__":
     test_two_calls_persistence_hashes_and_safe_resume()
     test_summary_generation_and_safe_replay()
     test_main_graph_level_set_keeps_rotation_and_protocol()
+    test_h4_measure()
+    test_h4_in_every_agentic_artifact()
+    test_family_helpers()
+    test_family_cli()
+    test_seed_eligibility_family()
+    test_references()
     print("\nALL RUNNER TESTS PASSED")

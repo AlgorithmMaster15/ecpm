@@ -226,7 +226,9 @@ def compute_explore_metrics(inst, m0_episodes, m1_episodes) -> dict:
         parse_failure_rate_m0/m1, retries_exhausted_rate_m0/m1,
         illegal_action_rate_m0/m1,
         m0_reference_action_agreement_m1, m0_observation_reference,
-        m0_reference_agreement_coverage_m1, per_episode_m0/m1.
+        m0_reference_agreement_coverage_m1, per_episode_m0/m1,
+        choices_after_consecutive_failures (the H4 / H6 measure, see
+        choices_after_consecutive_failures below).
     """
     m0_steps = [s for ep in m0_episodes for s in ep.steps]
     # Usage and lag count executed actions, not parser-abort diagnostics.
@@ -402,4 +404,59 @@ def compute_explore_metrics(inst, m0_episodes, m1_episodes) -> dict:
                                               m0_episodes),
         "per_episode_m1": _per_episode_metrics(inst.m1, inst.start,
                                               m1_episodes),
+        "choices_after_consecutive_failures":
+            choices_after_consecutive_failures(inst, m0_episodes, m1_episodes),
     }
+
+
+# The H4 / H6 measure (paper, tab:hyp and Appendix C): does the model choose
+# the broken link again after it has failed six times in a row?
+H4_CONSECUTIVE_FAILURES = 6
+
+
+def choices_after_consecutive_failures(inst, m0_episodes, m1_episodes,
+                                       n_failures=H4_CONSECUTIVE_FAILURES):
+    """Choices of the broken link made after n consecutive observed failures.
+
+    The run of consecutive failures of the broken link (u, v) is counted over
+    its attempts in both phases, in order, and a success of the link resets
+    it. Steps with an unknown action or a parsing abort (chosen empty) are not
+    attempts of the link. Once the run reaches n_failures during M1, every
+    later M1 decision at u counts, parsing aborts excluded:
+    `decisions_at_source` of them, `broken_choices` choosing (u, v).
+
+    The per-run unit of H4 is `chose_again`: True when the run reaches the
+    threshold in M1 and chooses the broken link at least once afterwards,
+    None when the run never reaches the threshold (not a qualifying run).
+
+    Returns None when the instance has no edited link (no change)."""
+    edge = inst.change.get("edge")
+    if edge is None:
+        return None
+    u, v = edge
+    run = 0
+    reached_at = None          # index into the M1 steps
+    decisions = broken = 0
+    m1_index = 0
+    for phase, episodes in (("m0", m0_episodes), ("m1", m1_episodes)):
+        for ep in episodes:
+            for s in ep.steps:
+                is_m1 = phase == "m1"
+                if is_m1 and reached_at is not None and s.node == u \
+                        and s.parse_status != "retries_exhausted":
+                    decisions += 1
+                    broken += s.chosen == v
+                if s.node == u and s.chosen == v:
+                    run = 0 if s.success else run + 1
+                    if is_m1 and reached_at is None and run >= n_failures:
+                        reached_at = m1_index
+                if is_m1:
+                    m1_index += 1
+    reached = reached_at is not None
+    return {"version": "consecutive_failures_v1",
+            "n_failures": n_failures,
+            "reached_in_m1": reached,
+            "reached_at_m1_step": reached_at,
+            "decisions_at_source": decisions if reached else None,
+            "broken_choices": broken if reached else None,
+            "chose_again": (broken > 0) if reached else None}

@@ -169,6 +169,36 @@ SCENARIOS = {
 }
 
 
+# Graph family (--n-nodes / --extra-edges). Extra links per family size: the
+# eight-node family uses the generator's default 6, the sixteen-node family 20.
+FAMILY_EXTRA_EDGES = {8: 6, 16: 20}
+
+
+def family_of(n_nodes=None, extra_edges=None):
+    """make_pair keyword arguments of a graph family. Neither flag set returns
+    {}, which keeps the generator's eight-node default unchanged."""
+    if n_nodes is None and extra_edges is None:
+        return {}
+    n = 8 if n_nodes is None else n_nodes
+    if extra_edges is None:
+        if n not in FAMILY_EXTRA_EDGES:
+            raise SystemExit(f"--n-nodes {n} has no default extra-edge count "
+                             f"({sorted(FAMILY_EXTRA_EDGES)}); pass --extra-edges")
+        extra_edges = FAMILY_EXTRA_EDGES[n]
+    return {"n_nodes": n, "extra_edges": extra_edges}
+
+
+def _family(sc):
+    """make_pair keyword arguments of the scenario's family ({} by default)."""
+    return dict(sc.get("family") or {})
+
+
+def _family_record(sc):
+    """Artifact field for a non-default family; empty otherwise, so default
+    artifacts are unchanged."""
+    return {"family": _family(sc)} if sc.get("family") else {}
+
+
 def resolve_scenario(args):
     """SCENARIO_DEFAULTS <- named scenario <- explicit CLI overrides."""
     if args.scenario not in SCENARIOS:
@@ -184,6 +214,10 @@ def resolve_scenario(args):
             sc[key] = val
     if args.probes:
         sc["probes"] = tuple(args.probes)
+    family = family_of(getattr(args, "n_nodes", None),
+                       getattr(args, "extra_edges", None))
+    if family:
+        sc["family"] = family
     if sc["condition"] not in CONDITIONS:
         raise SystemExit(f"unknown condition {sc['condition']!r}; "
                          f"known: {', '.join(CONDITIONS)}")
@@ -209,7 +243,8 @@ def git_head():
 
 def build_record(sc, deterministic):
     inst = make_pair(sc["seed"], sc["condition"],
-                     deterministic=deterministic, matched=sc["matched"])
+                     deterministic=deterministic, matched=sc["matched"],
+                     **_family(sc))
     ev = paired_evidence(inst, k=sc["k"], evidence_seed=sc["evidence_seed"])
     return json.loads(json.dumps(pair_to_json(inst, ev)))
 
@@ -549,7 +584,7 @@ def protocol_target_pair(record, sc):
         return (change["edge"]["from"], change["action"])
     sibling = make_pair(sc["seed"], "silent_break",
                         deterministic=record["deterministic"],
-                        matched=sc["matched"])
+                        matched=sc["matched"], **_family(sc))
     sibling_record = pair_to_json(sibling)
     sibling_change = sibling_record["change"]
     return (sibling_change["edge"]["from"], sibling_change["action"])
@@ -571,11 +606,12 @@ def queried_pairs_for_icl(record, sc):
     return [{"node": node, "action": action} for node, action in selected]
 
 
-def deterministic_gate(seed):
-    """Evaluate the fixed deterministic silent-break eligibility rule."""
+def deterministic_gate(seed, family=None):
+    """Evaluate the fixed deterministic silent-break eligibility rule.
+    family: make_pair keyword arguments of a graph family (default eight-node)."""
     try:
         inst = make_pair(seed, "silent_break", deterministic=True,
-                         matched=True)
+                         matched=True, **(family or {}))
     except ValueError as exc:
         return {"seed": seed, "eligible": False,
                 "reasons": ["construction_failed"], "error": str(exc)}
@@ -1227,9 +1263,9 @@ def _icl_run_identity(sc, deterministic, args, level, repeat,
                       sampling, reasoning, prompt_a, prompt_b, queried):
     return {
         "protocol": "icl_two_response_v1",
-        "scenario": {key: sc[key] for key in
-                     ("name", "condition", "seed", "matched", "k",
-                      "evidence_seed", "budget")},
+        "scenario": {**{key: sc[key] for key in
+                        ("name", "condition", "seed", "matched", "k",
+                         "evidence_seed", "budget")}, **_family_record(sc)},
         "deterministic": deterministic,
         "level_set": getattr(args, "level_set", "v1"),
         "level": level,
@@ -1610,7 +1646,7 @@ def run_icl_two_response_suite(sc, deterministic, args, outdir):
     for sampling_seed in args.sampling_seeds:
         sampling_seed_provenance(args, sampling_seed)
     if deterministic:
-        gate = deterministic_gate(sc["seed"])
+        gate = deterministic_gate(sc["seed"], _family(sc))
         if not gate["eligible"]:
             raise ValueError(f"seed {sc['seed']} fails deterministic gate: "
                              f"{', '.join(gate['reasons'])}")
@@ -1667,7 +1703,7 @@ def run_pilot(sc, deterministic, args):
                      "matched": sc["matched"],
                      "k_per_pair": record["evidence"]["k_per_pair"],
                      "evidence_seed": record["evidence"]["evidence_seed"],
-                     "seeds": record["seeds"]},
+                     "seeds": record["seeds"], **_family_record(sc)},
         "model": {"provider": args.provider, "model": args.model,
                   "temperature": 0, "max_tokens": args.max_tokens,
                   "timeout_s": args.timeout,
@@ -1780,7 +1816,7 @@ def run_pilot_active(sc, deterministic, args):
     explore_agent.py; this only wires it to a provider and writes the
     artifact."""
     inst = make_pair(sc["seed"], sc["condition"],
-                     deterministic=deterministic, matched=True)
+                     deterministic=deterministic, matched=True, **_family(sc))
     record = json.loads(json.dumps(pair_to_json(inst)))
     queried = queried_pairs_for(record, sc)
     cfg = explore_agent.ExploreConfig(
@@ -1857,7 +1893,7 @@ def run_pilot_active(sc, deterministic, args):
                 "pinned_to_freeze": head == FROZEN_SHA},
         "instance": {"graph_seed": sc["seed"], "condition": sc["condition"],
                      "deterministic": deterministic, "matched": True,
-                     "seeds": record["seeds"]},
+                     "seeds": record["seeds"], **_family_record(sc)},
         "model": {"provider": args.provider, "model": args.model,
                   "temperature": 0, "max_tokens": args.max_tokens},
         "explore": {
@@ -2038,7 +2074,19 @@ def main():
                          "only: greater than 0 enables Claude Extended "
                          "Thinking with this token budget (requires "
                          "--max-tokens greater than this value)")
+    ap.add_argument("--n-nodes", type=int, default=None,
+                    help="graph family size (default: the generator's 8); "
+                         "legacy passive, icl_two_response_v1 and active only")
+    ap.add_argument("--extra-edges", type=int, default=None,
+                    help="extra links of the graph family (default: 6 for 8 "
+                         "nodes, 20 for 16 nodes)")
     args = ap.parse_args()
+
+    if (args.n_nodes is not None or args.extra_edges is not None) and \
+            args.protocol in ("icl_expanded_v2", "icl_model_first_v1",
+                              "icl_graph_availability_v1"):
+        ap.error("--n-nodes/--extra-edges are wired for the legacy, "
+                 "icl_two_response_v1 and active paths only; no run started")
 
     if args.pilot_type == 'active':
         if args.history_policy is not None:
