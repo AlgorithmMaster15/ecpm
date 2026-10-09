@@ -39,6 +39,10 @@ def load(run_dir):
             "billed_cost": (sum(u["cost"] for u in a.get("provider_usage_calls") or [])
                             if a.get("provider_usage_calls") and all(isinstance((u or {}).get("cost"), (int, float))
                                                                      for u in a["provider_usage_calls"]) else None),
+            "max_tokens": (a.get("model") or {}).get("max_tokens"),
+            "max_tokens_used": min((u["max_tokens_used"] for u in a.get("provider_usage_calls") or []
+                                    if isinstance((u or {}).get("max_tokens_used"), int)), default=None),
+            "cut_off_calls": sum(1 for u in a.get("provider_usage_calls") or [] if (u or {}).get("finish_reason") == "length"),
             "calls": tok.get("n_calls"), "input_tokens": tok.get("prompt_tokens"), "output_tokens": tok.get("completion_tokens"),
         })
     return rows
