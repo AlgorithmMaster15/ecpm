@@ -77,6 +77,7 @@ def _is_gpt_reasoning(model):
     instead. False for non-reasoning chat variants (e.g.
     gpt-5-chat-latest), which still accept temperature/max_tokens
     normally."""
+    model = model.split("/")[-1]   # OpenRouter ids carry a provider prefix, e.g. openai/gpt-5.6-sol
     return model.startswith(("gpt-5", "gpt-6")) and "chat" not in model
 
 
