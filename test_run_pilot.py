@@ -809,6 +809,8 @@ def test_main_graph_level_set_keeps_rotation_and_protocol():
 
 # ---------------------------------------------------------------- H4 measure, graph family, references
 import glob, subprocess, sys
+import shutil
+import csv
 import explore_metrics
 from resource_mdp import make_pair
 
@@ -1013,6 +1015,32 @@ def test_references():
           data["rows"] and all({"rate", "transition", "bayes", "generator"} <= set(r) for r in data["rows"]))
 
 
+def test_grid_dry():
+    """--grid: parallel batches, same runs as a sequential batch, resume, combined table, one grid at a time."""
+    runs = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
+    before = set(os.listdir(runs)) if os.path.isdir(runs) else set()
+    args = ["run_agentic_cost_check.py", "--grid", "--dry", "--workers", "2", "--mode", "det",
+            "--condition", "silent_break,no_change", "--reasoning", "off", "--seeds", "8"]
+    try:
+        r = _run_py(args)
+        check("grid finishes all 6 runs", r.returncode == 0 and "grid done: 6/6 runs" in r.stdout, r.stdout[-400:] + r.stderr[-400:])
+        r = _run_py(args)
+        check("grid resumes: no batch is started again", "grid done: 6/6 runs" in r.stdout
+              and "batches running 0/2 | runs done 6/6" in r.stdout, r.stdout[-400:])
+        out = [d for d in os.listdir(runs) if d.startswith("DRY_GRID_") and os.path.isdir(os.path.join(runs, d))]
+        rows = list(csv.DictReader(open(os.path.join(runs, sorted(out)[-1], "agentic_runs.csv"), encoding="utf-8")))
+        check("combined table has every grid run", len(rows) == 6 and {x["scenario"] for x in rows} == {"silent_break", "no_change"})
+        lock = os.path.join(runs, "_grid_logs", "grid.lock")
+        open(lock, "w").write(str(os.getpid()))
+        r = _run_py(args)
+        check("a second grid is refused while one runs", r.returncode != 0 and "another grid is running" in (r.stdout + r.stderr))
+        os.remove(lock)
+    finally:
+        for d in set(os.listdir(runs)) - before:
+            p = os.path.join(runs, d)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+
+
 if __name__ == "__main__":
     test_legacy_prompt_and_scorer_regression()
     test_levels_share_visible_evidence_and_raw_order()
@@ -1037,4 +1065,5 @@ if __name__ == "__main__":
     test_family_cli()
     test_seed_eligibility_family()
     test_references()
+    test_grid_dry()
     print("\nALL RUNNER TESTS PASSED")

@@ -8,6 +8,7 @@
     python3 run_agentic_cost_check.py --openrouter MODEL_ID --price-in 0.3 --price-out 1.2   # via OpenRouter
     python3 run_agentic_cost_check.py --reasoning off   # or on; omitted = model default (not controlled)
     python3 run_agentic_cost_check.py --help            # this text
+    python3 run_agentic_cost_check.py --grid --openrouter MODEL_ID --workers 24   # a model's whole grid, in parallel
 
 All options (combine freely):
   --seeds 8,13        graphs (default 8,13,25,0,1)
@@ -24,6 +25,10 @@ All options (combine freely):
   --max-tokens N      output cap per call, reasoning included (default 32768)
   --dry               no API calls
   --yes               skip the confirmation after the first run (for unattended loops)
+  --grid              run a whole grid: every (mode, condition, reasoning, seed) as its own batch;
+                      --mode, --condition and --reasoning then take lists (defaults det,sto / all / off,on)
+  --workers N         with --grid: batches run at once (default 8)
+  --since YYYY-MM-DD  with --grid: finished runs in batch folders from this date on count (default today)
 Every option is recorded in the run folder name and in each run's artifact.
 
 What it does:
@@ -58,8 +63,9 @@ YES = "--yes" in sys.argv          # skip the one confirmation after the first r
 if "--help" in sys.argv or "-h" in sys.argv:
     print(__doc__); sys.exit(0)
 VALUE_FLAGS = {"--seeds", "--mode", "--condition", "--history", "--reasoning", "--reasoning-control", "--max-tokens",
-               "--openrouter", "--price-in", "--price-out"}
-SWITCH_FLAGS = {"--dry", "--yes", "--matched-prep", "--help", "-h"}
+               "--openrouter", "--price-in", "--price-out", "--workers", "--since"}
+SWITCH_FLAGS = {"--dry", "--yes", "--matched-prep", "--help", "-h", "--grid"}
+GRID = "--grid" in sys.argv
 _rest = sys.argv[1:]
 while _rest:   # a mistyped option would otherwise be ignored silently, e.g. a run without its reasoning control
     _flag = _rest.pop(0)
@@ -87,15 +93,18 @@ HISTORY = _arg("--history", "none")                 # ablation: retained_reports
 MATCHED_PREP = "--matched-prep" in sys.argv
 REASONING = _arg("--reasoning", "")                 # off | on; empty = model default, not controlled
 REASONING_CONTROL = _arg("--reasoning-control", "")  # JSON override of the default control
-if REASONING not in ("", "off", "on"):
+if REASONING not in ("", "off", "on") and not GRID:   # --grid takes a list, checked in grid()
     sys.exit("--reasoning must be off or on")          # ablation: preparation turn for every arm, as in ICL
 SWITCHES = ["--mode-prompts", "--history", HISTORY] + (["--matched-prep"] if MATCHED_PREP else [])
-RUN_DIR = os.path.join(ROOT, "runs", ("DRY_" if DRY else "") + datetime.date.today().isoformat()
-                       + f"_agentic_cost_check_{MODE}_seeds{'-'.join(map(str, SEEDS))}"
-                       + ("" if HISTORY == "none" else f"_{HISTORY.split('_')[0]}") + ("_prep" if MATCHED_PREP else "")
-                       + ("" if SCENARIO == "silent_break" else f"_{SCENARIO}")
-                       + (f"_{OPENROUTER.replace('/', '-')}" if OPENROUTER else "")
-                       + (f"_reasoning-{REASONING}" if REASONING else ""))
+def batch_name(mode, seeds, scenario, reasoning, date=None):
+    """Batch folder name: every setting that defines the runs is in it."""
+    return (("DRY_" if DRY else "") + (datetime.date.today().isoformat() if date is None else date)
+            + f"_agentic_cost_check_{mode}_seeds{'-'.join(map(str, seeds))}"
+            + ("" if HISTORY == "none" else f"_{HISTORY.split('_')[0]}") + ("_prep" if MATCHED_PREP else "")
+            + ("" if scenario == "silent_break" else f"_{scenario}")
+            + (f"_{OPENROUTER.replace('/', '-')}" if OPENROUTER else "")
+            + (f"_reasoning-{reasoning}" if reasoning else ""))
+RUN_DIR = os.path.join(ROOT, "runs", batch_name(MODE, SEEDS, SCENARIO, REASONING))
 CRED = os.path.expanduser("~/.ecpm_azure.json")
 
 def openrouter_creds():
@@ -272,5 +281,134 @@ def main():
     shutil.make_archive(RUN_DIR, "zip", RUN_DIR)
     log(f"finished. Everything is in {RUN_DIR} and {RUN_DIR}.zip")
 
+# ---- --grid: a whole grid, each (mode, condition, reasoning, seed) a batch run by this script --------
+GRID_SCENARIOS = ("no_change", "irrelevant", "silent_break", "hard_removal", "redirect", "degradation")
+
+def _alive(pid):
+    if os.name == "nt":   # os.kill(pid, 0) would terminate the process on Windows
+        import ctypes
+        k = ctypes.windll.kernel32; h = k.OpenProcess(0x1000, False, pid)
+        if not h: return False
+        code = ctypes.c_ulong(); k.GetExitCodeProcess(h, ctypes.byref(code)); k.CloseHandle(h)
+        return code.value == 259   # STILL_ACTIVE
+    try: os.kill(pid, 0); return True
+    except OSError: return False
+
+def _stop(p):   # a batch and the run it started
+    if p.poll() is None:
+        if os.name == "nt": subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
+        else:
+            import signal; os.killpg(p.pid, signal.SIGTERM)
+
+def _online():
+    if DRY or not OPENROUTER: return True
+    import urllib.request
+    try: urllib.request.urlopen(urllib.request.Request(OPENROUTER_URL + "/models", method="HEAD"), timeout=20); return True
+    except Exception: return False
+
+def _done_arms(mode, scenario, reasoning, seed, since):
+    """Arms already finished for this seed, in any batch folder from `since` on (one-seed or five-seed)."""
+    head, tail = batch_name(mode, ["@"], scenario, reasoning, date="").split("@")   # "...seeds" / "_suffix"
+    pre = "DRY_" if DRY else ""
+    done = set()
+    for d in os.listdir(os.path.join(ROOT, "runs")):
+        if not d.startswith(pre) or d[len(pre):len(pre) + 10] < since: continue
+        rest = d[len(pre) + 10:]
+        if not (rest.startswith(head[len(pre):]) and rest.endswith(tail)): continue
+        seeds = rest[len(head) - len(pre):len(rest) - len(tail)]
+        if "_" in seeds or str(seed) not in seeds.split("-"): continue   # exact suffix: no other scenario
+        done |= {a for a in CONDITIONS if any(f.startswith("pilot_") and f.endswith(".json") for f in
+                 (os.listdir(os.path.join(ROOT, "runs", d, f"s{seed}_{a}_r0")) if os.path.isdir(os.path.join(ROOT, "runs", d, f"s{seed}_{a}_r0")) else []))}
+    return done
+
+def glog(msg):   # the grid's own log (log() writes into a single batch folder)
+    line = f"{datetime.datetime.now():%H:%M:%S} {msg}"; print(line, flush=True)
+    with open(os.path.join(ROOT, "runs", "_grid_logs", "grid_log.txt"), "a") as fh: fh.write(line + "\n")
+
+def grid():
+    import time
+    modes = _arg("--mode", "det,sto").split(","); reasonings = _arg("--reasoning", "off,on").split(",")
+    scen = _arg("--condition", "all"); scenarios = list(GRID_SCENARIOS) if scen == "all" else scen.split(",")
+    workers = int(_arg("--workers", "8")); since = _arg("--since", datetime.date.today().isoformat())
+    if set(modes) - {"det", "sto"} or set(reasonings) - {"off", "on"} or set(scenarios) - set(GRID_SCENARIOS):
+        sys.exit("--grid: --mode det,sto | --reasoning off,on | --condition all or names from: " + ", ".join(GRID_SCENARIOS))
+    jobs = [(m, c, r, s) for r in reasonings for m in modes for c in scenarios for s in SEEDS
+            if not (m == "det" and c == "degradation")]   # degradation is undefined in the deterministic world
+    total = len(jobs) * len(CONDITIONS)
+    logs = os.path.join(ROOT, "runs", "_grid_logs"); os.makedirs(logs, exist_ok=True)
+    lock = os.path.join(logs, "grid.lock")
+    if os.path.exists(lock) and _alive(int(open(lock).read() or 0)):
+        sys.exit(f"another grid is running (PID {open(lock).read()}); stop it first (Ctrl+C in its window)")
+    open(lock, "w").write(str(os.getpid()))
+    if OPENROUTER and not DRY:   # asked once here, inherited by every batch
+        os.environ.setdefault("OPENROUTER_API_KEY", openrouter_creds()["key"])
+    elif not DRY: creds()
+    if os.name == "nt":   # keep the computer awake while the grid runs (the screen may still turn off)
+        import ctypes; ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint(0x80000001))   # unsigned flag
+    elif shutil.which("caffeinate"): subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+    skip = {"--grid", "--workers", "--since", "--mode", "--condition", "--reasoning", "--seeds", "--yes"}
+    passthrough, a = [], sys.argv[1:]
+    while a:
+        f = a.pop(0); v = [a.pop(0)] if f in VALUE_FLAGS else []
+        if f not in skip: passthrough += [f] + v
+    pending, running, tries = list(jobs), {}, {}
+    count = lambda: sum(len(_done_arms(m, c, r, s, since)) for m, c, r, s in jobs)
+    glog(f"grid: {len(jobs)} batches ({total} runs), up to {workers} at once")
+    shown = 0
+    try:
+        while pending or running:
+            for j, p in list(running.items()):
+                if p.poll() is not None:
+                    del running[j]
+                    if len(_done_arms(*j, since)) < len(CONDITIONS):
+                        if tries[j] < 5: pending.append(j)
+                        else: glog(f"gave up on {j} after 5 attempts (see runs/_grid_logs)")
+            while pending and len(running) < workers:
+                while not _online():
+                    glog("network down: no new batches; checking again in 3 minutes"); time.sleep(180)
+                m, c, r, s = j = pending.pop(0)
+                missing = [x for x in CONDITIONS if x not in _done_arms(m, c, r, s, since)]
+                if not missing: continue
+                d = os.path.join(ROOT, "runs", batch_name(m, [s], c, r)); os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, "queue.txt"), "w") as fh:   # only the arms still missing
+                    fh.write("# condition seed repeat\n" + "".join(f"{x} {s} 0\n" for x in missing))
+                tries[j] = tries.get(j, 0) + 1
+                running[j] = subprocess.Popen(
+                    [sys.executable, "-B", "-u", __file__] + passthrough + ["--seeds", str(s), "--mode", m,
+                     "--condition", c, "--reasoning", r, "--yes"], cwd=ROOT, stdin=subprocess.DEVNULL,
+                    stdout=open(os.path.join(logs, f"{m}_{c}_{r}_s{s}.txt"), "a"), stderr=subprocess.STDOUT,
+                    start_new_session=os.name != "nt")
+            if time.time() - shown >= 30:
+                glog(f"batches running {len(running)}/{workers} | runs done {count()}/{total} | batches waiting {len(pending)}")
+                shown = time.time()
+            time.sleep(1 if DRY else 5)
+    except KeyboardInterrupt:
+        glog("stopping: ending every running batch"); [_stop(p) for p in running.values()]; return 130
+    finally:
+        if os.path.exists(lock): os.remove(lock)
+    out = os.path.join(ROOT, "runs", ("DRY_" if DRY else "") + "GRID_" + (OPENROUTER.replace("/", "-") or "azure")
+                       + "_" + datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"))
+    _combine(jobs, since, out)   # one combined table of every batch folder the grid used
+    glog(f"grid done: {count()}/{total} runs. Combined results: {out}.zip (agentic_runs.csv, agentic_summary.md)")
+    return 0
+
+def _combine(jobs, since, out):
+    """Copy every batch folder the grid's runs live in into one folder, summarize it, zip it."""
+    keep = set()
+    for m, c, r, s in jobs:
+        head, tail = batch_name(m, ["@"], c, r, date="").split("@")
+        pre = "DRY_" if DRY else ""
+        for d in os.listdir(os.path.join(ROOT, "runs")):
+            rest = d[len(pre) + 10:]
+            if d.startswith(pre) and d[len(pre):len(pre) + 10] >= since and rest.startswith(head[len(pre):]) \
+                    and rest.endswith(tail) and "_" not in rest[len(head) - len(pre):len(rest) - len(tail)]:
+                keep.add(d)
+    os.makedirs(out, exist_ok=True)
+    for d in sorted(keep):
+        shutil.copytree(os.path.join(ROOT, "runs", d), os.path.join(out, d), dirs_exist_ok=True)
+    subprocess.run([sys.executable, "-B", "summarize_agentic_runs.py", out], cwd=ROOT, stdout=subprocess.DEVNULL)
+    shutil.make_archive(out, "zip", out)
+
 if __name__ == "__main__":
+    if GRID: sys.exit(grid())
     main()
